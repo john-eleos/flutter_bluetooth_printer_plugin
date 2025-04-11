@@ -30,11 +30,6 @@ flutter:
         package: id.flutter.plugins
         pluginClass: FlutterBluetoothPrinterPlugin
         dartPluginClass: MethodChannelBluetoothPrinter
-      ios:
-        pluginClass: FlutterBluetoothPrinterPlugin
-        dartPluginClass: MethodChannelBluetoothPrinter
-      web:
-        default_package: flutter_bluetooth_printer_web
 
   fonts:
     - family: Receipt

@@ -21,6 +21,11 @@ enum PaperSize {
 }
 
 class FlutterBluetoothPrinter {
+
+  // Create a single instance for reading operations
+  static final _reader = MethodChannelBluetoothPrinter();
+
+
   static Stream<DiscoveryState> _discovery() async* {
     final result = <BluetoothDevice>[];
     await for (final state
@@ -40,11 +45,28 @@ class FlutterBluetoothPrinter {
 
   static Stream<DiscoveryState> get discovery => _discovery();
 
+  /* NEW READING FUNCTIONALITY */
+  static Future<bool> startReading({
+    required String address,
+    required void Function(String address, Uint8List data) onDataReceived,
+    void Function(String address, String error, String? errorType)? onError,
+  }) {
+    return _reader.startReading(
+      address,
+      onDataReceived: onDataReceived,
+      onError: onError,
+    );
+  }
+
+  static Future<bool> stopReading(String address) {
+    return _reader.stopReading(address);
+  }
+  /* END OF NEW READING FUNCTIONALITY */
+
+  /// Prints raw bytes to the printer
   static Future<bool> printBytes({
     required String address,
     required Uint8List data,
-
-    /// if true, you should manually disconnect the printer after finished
     required bool keepConnected,
     int maxBufferSize = 512,
     int delayTime = 120,
@@ -53,13 +75,14 @@ class FlutterBluetoothPrinter {
     return FlutterBluetoothPrinterPlatform.instance.write(
       address: address,
       data: data,
-      onProgress: onProgress,
       keepConnected: keepConnected,
       maxBufferSize: maxBufferSize,
       delayTime: delayTime,
+      onProgress: onProgress,
     );
   }
 
+  /// Calculates estimated printing duration
   static double calculatePrintingDurationInMilliseconds(
     int heightInDots,
     double printSpeed,
@@ -67,21 +90,13 @@ class FlutterBluetoothPrinter {
     double paperWidth,
     int dotsPerLineHeight,
   ) {
-    // Calculate the number of lines
-    double numberOfLines = heightInDots / dotsPerLineHeight;
-
-    // Calculate lines per second
-    double linesPerSecond = printSpeed / paperWidth;
-
-    // Calculate the duration in seconds
-    double durationSeconds = numberOfLines / linesPerSecond;
-
-    // Convert the duration to milliseconds
-    double durationMilliseconds = durationSeconds * 1000;
-
-    return durationMilliseconds;
+    final numberOfLines = heightInDots / dotsPerLineHeight;
+    final linesPerSecond = printSpeed / paperWidth;
+    final durationSeconds = numberOfLines / linesPerSecond;
+    return durationSeconds * 1000;
   }
 
+  /// Prints an image to the printer
   static Future<bool> printImageSingle({
     required String address,
     required Uint8List imageBytes,
@@ -105,11 +120,9 @@ class FlutterBluetoothPrinter {
         useImageRaster: useImageRaster,
       );
 
-      await _initialize(
-        address: address,
-      );
+      await _initialize(address: address);
 
-      // waiting for printer initialized and buffers cleared
+      // Wait for printer initialization
       await Future.delayed(const Duration(milliseconds: 400));
 
       final additional = paperSize == PaperSize.mm58
@@ -120,20 +133,14 @@ class FlutterBluetoothPrinter {
               for (int i = 0; i < addFeeds; i++) ...Commands.lineFeed,
             ];
 
-      final printResult = await printBytes(
-        keepConnected: true,
+      return await printBytes(
         address: address,
-        data: Uint8List.fromList([
-          ...imageData,
-          ...reset,
-          ...additional,
-        ]),
+        data: Uint8List.fromList([...imageData, ...reset, ...additional]),
+        keepConnected: keepConnected,
         onProgress: onProgress,
         maxBufferSize: maxBufferSize,
         delayTime: delayTime,
       );
-
-      return printResult;
     } catch (e) {
       return false;
     } finally {
@@ -143,13 +150,19 @@ class FlutterBluetoothPrinter {
     }
   }
 
-  static Future<bool> _initialize({
-    required String address,
-  }) async {
+  /// Enables Bluetooth if disabled
+  static Future<void> enableBluetooth() {
+    return FlutterBluetoothPrinterPlatform.instance.enableBluetooth();
+  }
+
+  /// Requests necessary permissions
+  static Future<void> requestPermissions() {
+    return FlutterBluetoothPrinterPlatform.instance.requestPermissions();
+  }
+
+  static Future<bool> _initialize({required String address}) async {
     final isConnected = await connect(address);
-    if (!isConnected) {
-      return false;
-    }
+    if (!isConnected) return false;
 
     final generator = Generator();
     final reset = generator.reset();
@@ -160,26 +173,32 @@ class FlutterBluetoothPrinter {
     );
   }
 
+  /// Shows a device selection dialog
   static Future<BluetoothDevice?> selectDevice(BuildContext context) async {
     final selected = await showModalBottomSheet(
       context: context,
       builder: (context) => const BluetoothDeviceSelector(),
     );
-    if (selected is BluetoothDevice) {
-      return selected;
-    }
+    if (selected is BluetoothDevice) return selected;
     return null;
   }
 
-  static Future<bool> disconnect(String address) async {
+  /// Disconnects from a device
+  static Future<bool> disconnect(String address) {
     return FlutterBluetoothPrinterPlatform.instance.disconnect(address);
   }
 
-  static Future<bool> connect(String address) async {
-    return FlutterBluetoothPrinterPlatform.instance.connect(address);
+  /// Connects to a device with optional timeout
+  static Future<bool> connect(String address, {int timeout = 10000}) {
+    return FlutterBluetoothPrinterPlatform.instance.connect(
+      address,
+      timeout: timeout,
+    );
   }
 
-  static Future<BluetoothState> getState() async {
+  /// Checks the current Bluetooth state
+  static Future<BluetoothState> getState() {
     return FlutterBluetoothPrinterPlatform.instance.checkState();
   }
 }
+

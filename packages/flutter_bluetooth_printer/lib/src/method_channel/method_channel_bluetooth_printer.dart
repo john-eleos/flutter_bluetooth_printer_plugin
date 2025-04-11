@@ -13,7 +13,6 @@ class UnsupportedBluetoothState extends DiscoveryState {}
 class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
   MethodChannelBluetoothPrinter();
 
-  // DartPluginRegistrant registrar
   static void registerWith() {
     FlutterBluetoothPrinterPlatform.instance = MethodChannelBluetoothPrinter();
   }
@@ -23,11 +22,16 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
       const EventChannel('maseka.dev/flutter_bluetooth_printer/discovery');
 
   ProgressCallback? _progressCallback;
+  DataReceivedCallback? _dataReceivedCallback;
+  ErrorCallback? _errorCallback;
 
   bool _isInitialized = false;
+  bool _isBusy = false;
+
   void _init() {
     if (_isInitialized) return;
     _isInitialized = true;
+    
     channel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'didUpdateState':
@@ -41,8 +45,27 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
           final progress = call.arguments['progress'] as int;
           _progressCallback?.call(total, progress);
           break;
+
+        case 'onDataRead':
+          final address = call.arguments['address'] as String;
+          final data = call.arguments['data'] as Uint8List;
+          _dataReceivedCallback?.call(address, data);
+          break;
+
+        case 'onReadError':
+          final address = call.arguments['address'] as String;
+          final error = call.arguments['error'] as String;
+          final errorType = call.arguments['errorType'] as String?;
+          _errorCallback?.call(address, error, errorType);
+          break;
+
+        case 'onConnectionStateChanged':
+          final address = call.arguments['address'] as String;
+          final state = call.arguments['state'] as int;
+          // Handle connection state changes if needed
+          break;
       }
-      return true;
+      return null;
     });
   }
 
@@ -50,103 +73,57 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
     switch (value) {
       case 0:
         return BluetoothState.unknown;
-
       case 1:
         return BluetoothState.disabled;
-
       case 2:
         return BluetoothState.enabled;
-
       case 3:
         return BluetoothState.notPermitted;
-
       case 4:
         return BluetoothState.permitted;
+      default:
+        return BluetoothState.unknown;
     }
-
-    return BluetoothState.unknown;
-  }
-
-  Stream<DiscoveryState> _discovery() async* {
-    final result = await channel.invokeMethod('getState');
-    final state = _intToState(result);
-    if (state == BluetoothState.notPermitted) {
-      yield PermissionRestrictedState();
-    }
-
-    if (state == BluetoothState.disabled) {
-      yield BluetoothDisabledState();
-    }
-
-    yield* discoveryChannel
-        .receiveBroadcastStream(DateTime.now().millisecondsSinceEpoch)
-        .map(
-      (data) {
-        final code = data['code'];
-        final state = _intToState(code);
-
-        if (state == BluetoothState.notPermitted) {
-          return PermissionRestrictedState();
-        }
-
-        if (state == BluetoothState.disabled) {
-          return BluetoothDisabledState();
-        }
-
-        if (state == BluetoothState.enabled) {
-          return BluetoothEnabledState();
-        }
-
-        if (state == BluetoothState.permitted) {
-          return BluetoothDevice(
-            address: data['address'],
-            name: data['name'],
-            type: data['type'],
-          );
-        }
-
-        return UnknownState();
-      },
-    );
   }
 
   @override
-  Stream<DiscoveryState> get discovery => _discovery();
+  Stream<DiscoveryState> get discovery {
+    return discoveryChannel
+        .receiveBroadcastStream()
+        .asyncExpand<DiscoveryState>((data) async* {
+      final code = data['code'];
+      final state = _intToState(code);
 
-  bool _isBusy = false;
-
-  @override
-  Future<bool> write({
-    required String address,
-    required Uint8List data,
-    bool keepConnected = false,
-    required int maxBufferSize,
-    required int delayTime,
-    ProgressCallback? onProgress,
-  }) async {
-    try {
-      if (_isBusy) {
-        throw busyDeviceException;
+      if (state == BluetoothState.notPermitted) {
+        yield PermissionRestrictedState();
+      } else if (state == BluetoothState.disabled) {
+        yield BluetoothDisabledState();
+      } else if (state == BluetoothState.enabled) {
+        yield BluetoothEnabledState();
+      } else if (state == BluetoothState.permitted) {
+        yield BluetoothDevice(
+          address: data['address'],
+          name: data['name'],
+          type: data['type'],
+        );
+      } else {
+        yield UnknownState();
       }
+    });
+  }
 
+  @override
+  Future<bool> connect(String address, {int timeout = 10000}) async {
+    try {
       _isBusy = true;
       _init();
 
-      _progressCallback = onProgress;
-      final res = await channel.invokeMethod('write', {
+      final res = await channel.invokeMethod('connect', {
         'address': address,
-        'data': data,
-        'keep_connected': keepConnected,
-        'delay_time': delayTime,
-        'max_buffer_size': maxBufferSize,
+        'timeout': timeout,
       });
 
-      _progressCallback = null;
-      if (res is bool) {
-        return res;
-      }
-
-      return false;
+      return res == true;
     } catch (e) {
       return false;
     } finally {
@@ -156,48 +133,106 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
 
   @override
   Future<bool> disconnect(String address) async {
-    final res = await channel.invokeMethod('disconnect', {
-      'address': address,
-    });
-
-    if (res is bool) {
-      return res;
+    try {
+      final res = await channel.invokeMethod('disconnect', {
+        'address': address,
+      });
+      return res == true;
+    } catch (e) {
+      return false;
     }
-
-    return false;
   }
 
   @override
-  Future<bool> connect(String address) async {
+  Future<bool> write({
+    required String address,
+    required Uint8List data,
+    bool keepConnected = false,
+    int maxBufferSize = 512,
+    int delayTime = 0,
+    ProgressCallback? onProgress,
+  }) async {
     try {
-      _isBusy = true;
-      _init();
-
-      await discovery
-          .firstWhere((element) =>
-              element is BluetoothDevice && element.address == address)
-          .timeout(const Duration(seconds: 10));
-
-      final res = await channel.invokeMethod('connect', {
-        'address': address,
-      });
-
-      if (res is bool) {
-        return res;
+      if (_isBusy) {
+        throw Exception('Device is busy with another operation');
       }
 
-      return false;
+      _isBusy = true;
+      _init();
+      _progressCallback = onProgress;
+
+      final res = await channel.invokeMethod('write', {
+        'address': address,
+        'data': data,
+        'keep_connected': keepConnected,
+        'max_buffer_size': maxBufferSize,
+        'delay_time': delayTime,
+      });
+
+      return res == true;
     } catch (e) {
       return false;
     } finally {
+      _progressCallback = null;
       _isBusy = false;
     }
   }
 
   @override
+  Future<bool> startReading(
+    String address, {
+    DataReceivedCallback? onDataReceived,
+    ErrorCallback? onError,
+  }) async {
+    try {
+      _init();
+      _dataReceivedCallback = onDataReceived;
+      _errorCallback = onError;
+
+      final res = await channel.invokeMethod('read', {
+        'address': address,
+      });
+
+      return res == true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> stopReading(String address) async {
+    try {
+      final res = await channel.invokeMethod('stopReading', {
+        'address': address,
+      });
+      
+      // Clear callbacks when stopping
+      _dataReceivedCallback = null;
+      _errorCallback = null;
+      
+      return res == true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  @override
   Future<BluetoothState> checkState() async {
-    final result = await channel.invokeMethod('getState');
-    final state = _intToState(result);
-    return state;
+    try {
+      final result = await channel.invokeMethod('getState');
+      return _intToState(result);
+    } catch (e) {
+      return BluetoothState.unknown;
+    }
+  }
+
+  @override
+  Future<void> enableBluetooth() async {
+    await channel.invokeMethod('enableBluetooth');
+  }
+
+  @override
+  Future<void> requestPermissions() async {
+    await channel.invokeMethod('requestPermissions');
   }
 }

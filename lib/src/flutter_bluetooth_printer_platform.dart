@@ -1,35 +1,40 @@
-library flutter_bluetooth_printer_platform_interface;
-
+import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
-import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
-typedef ProgressCallback = void Function(int total, int sent);
+typedef ProgressCallback = void Function(int total, int progress);
+typedef DataReceivedCallback = void Function(String address, Uint8List data);
+typedef ErrorCallback = void Function(String address, String error, String? errorType);
+
 
 enum BluetoothConnectionState {
   idle,
   connecting,
+  connected,
+  disconnecting,
+  disconnected,
   printing,
-  completed,
 }
 
 enum BluetoothState {
-  unknown, //0
-  disabled, //1
-  enabled, //2
-  notPermitted, //3
-  permitted, //4
+  unknown,
+  disabled,
+  enabled,
+  notPermitted,
+  permitted,
 }
 
 abstract class DiscoveryState {}
 
+
 abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
   static final Object _token = Object();
   static late FlutterBluetoothPrinterPlatform _instance;
+  
   FlutterBluetoothPrinterPlatform() : super(token: _token);
 
   static FlutterBluetoothPrinterPlatform get instance => _instance;
+  
   static set instance(FlutterBluetoothPrinterPlatform instance) {
     PlatformInterface.verify(instance, _token);
     _instance = instance;
@@ -50,9 +55,23 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
     ProgressCallback? onProgress,
   });
 
-  Future<bool> connect(String address);
+  Future<bool> connect(String address, {int timeout = 10000});
+  
   Future<bool> disconnect(String address);
+  
   Future<BluetoothState> checkState();
+
+  Future<bool> startReading(
+    String address, {
+    DataReceivedCallback? onDataReceived,
+    ErrorCallback? onError,
+  });
+
+  Future<bool> stopReading(String address);
+
+  Future<void> enableBluetooth();
+  
+  Future<void> requestPermissions();
 }
 
 class BluetoothDevice extends DiscoveryState {
@@ -69,8 +88,28 @@ class BluetoothDevice extends DiscoveryState {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BluetoothDevice && other.address == address;
+      other is BluetoothDevice &&
+          runtimeType == other.runtimeType &&
+          address == other.address;
 
   @override
   int get hashCode => address.hashCode;
+
+  @override
+  String toString() {
+    return 'BluetoothDevice{address: $address, name: $name, type: $type}';
+  }
 }
+
+
+
+
+class UnknownState extends DiscoveryState {}
+
+class PermissionRestrictedState extends DiscoveryState {}
+
+class BluetoothDisabledState extends DiscoveryState {}
+
+class BluetoothEnabledState extends DiscoveryState {}
+
+class UnsupportedBluetoothState extends DiscoveryState {}

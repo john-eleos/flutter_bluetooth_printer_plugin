@@ -1,8 +1,44 @@
 name: flutter_bluetooth_printer
+description: Image based printing for bluetooth thermal printer, support for iOS and Android.
+version: 2.17.3
+repository: https://github.com/ekasetiawans/flutter_bluetooth_printer_plugin
+
+false_secrets:
+  - example/**
 
 environment:
-  sdk: ">=2.17.5 <4.0.0"
-  flutter: ">=3.0.0"
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
 
 dependencies:
-  melos: ^3.1.0
+  plugin_platform_interface: ^2.1.8
+  flutter:
+    sdk: flutter
+
+  image: ">=4.1.7"
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: id.flutter.plugins
+        pluginClass: FlutterBluetoothPrinterPlugin
+        dartPluginClass: MethodChannelBluetoothPrinter
+      ios:
+        pluginClass: FlutterBluetoothPrinterPlugin
+        dartPluginClass: MethodChannelBluetoothPrinter
+      web:
+        default_package: flutter_bluetooth_printer_web
+
+  fonts:
+    - family: Receipt
+      fonts:
+        - asset: fonts/JetBrainsMono-Regular.ttf
+        - asset: fonts/JetBrainsMono-ExtraBold.ttf
+          weight: 600

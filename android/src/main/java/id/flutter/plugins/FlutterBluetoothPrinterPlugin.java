@@ -261,7 +261,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             synchronized (this) {
                 String address = call.argument("address");
                 int timeout = call.argument("timeout") != null ?
-                        (int) call.argument("timeout") : 15000; // Increased default timeout to 15s
+                        (int) call.argument("timeout") : 15000;
 
                 try {
                     updateConnectionState(address, STATE_CONNECTING);
@@ -278,18 +278,27 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                         return;
                     }
 
-                    // Connection strategy: Try multiple methods
+                    // ======= NEW PAIRING HANDLING ======= //
+                    if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+                        Log.d(TAG, "Device not paired, initiating pairing");
+                        boolean pairingStarted = startPairing(device);
+                        if (!pairingStarted) {
+                            handleConnectionError(result, "Pairing initiation failed", null, ERROR_CONNECTION_FAILED);
+                            return;
+                        }
+
+                        // Wait for pairing to complete with timeout
+                        if (!waitForPairingCompletion(device, 10000)) { // 10s pairing timeout
+                            handleConnectionError(result, "Pairing timed out", null, ERROR_CONNECTION_FAILED);
+                            return;
+                        }
+                    }
+                    // ======= END PAIRING HANDLING ======= //
+
                     BluetoothSocket socket = tryAllConnectionMethods(device);
 
                     if (socket == null) {
                         handleConnectionError(result, "All connection attempts failed", null, ERROR_CONNECTION_FAILED);
-                        return;
-                    }
-
-                    // Verify connection
-                    if (!testConnection(socket)) {
-                        socket.close();
-                        handleConnectionError(result, "Connection verification failed", null, ERROR_CONNECTION_FAILED);
                         return;
                     }
 
@@ -305,6 +314,40 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             }
         });
     }
+
+    // ======= NEW PAIRING METHODS ======= //
+    private boolean startPairing(BluetoothDevice device) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                // Requires BLUETOOTH_ADMIN permission
+                Method method = device.getClass().getMethod("createBond");
+                return (boolean) method.invoke(device);
+            }
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Pairing initiation failed", e);
+            return false;
+        }
+    }
+
+    private boolean waitForPairingCompletion(BluetoothDevice device, long timeoutMillis) {
+        long startTime = System.currentTimeMillis();
+        while (System.currentTimeMillis() - startTime < timeoutMillis) {
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                return true;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+// ======= END PAIRING METHODS ======= //
+
+
 
     private BluetoothSocket tryAllConnectionMethods(BluetoothDevice device) throws IOException {
         BluetoothSocket socket = null;

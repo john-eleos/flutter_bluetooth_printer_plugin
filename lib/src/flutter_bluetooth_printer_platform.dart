@@ -61,13 +61,14 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
   /// Checks the current Bluetooth state
   Future<BluetoothState> checkState();
 
-  /// Starts reading data from the device using callback-based approach
-  /// Consider using [createReadStream] for a more modern stream-based approach
-  @Deprecated('Prefer using createReadStream for better stream handling')
+
+  // Update read methods to match timeout and buffer size from Java
+
   Future<bool> startReading(
       String address, {
         DataReceivedCallback? onDataReceived,
         ErrorCallback? onError,
+        int timeoutMs = 5000, // Add timeout parameter
       });
 
   /// Stops reading data from the device
@@ -75,7 +76,9 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
 
   /// Creates a continuous stream of data from the Bluetooth device
   /// This is the preferred way to handle incoming data
-  Stream<Uint8List> createReadStream(String address);
+
+
+  Stream<Uint8List> createReadStream(String address, {int timeoutMs = 5000});
 
 
   /// Writes data to the connected Bluetooth device

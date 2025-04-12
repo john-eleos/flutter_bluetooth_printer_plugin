@@ -259,56 +259,112 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     private void connectDevice(MethodCall call, Result result) {
         threadPool.execute(() -> {
             synchronized (this) {
-                try {
-                    String address = call.argument("address");
-                    int timeout = call.argument("timeout") != null ?
-                            (int) call.argument("timeout") : 10000;
+                String address = call.argument("address");
+                int timeout = call.argument("timeout") != null ?
+                        (int) call.argument("timeout") : 15000; // Increased default timeout to 15s
 
+                try {
                     updateConnectionState(address, STATE_CONNECTING);
 
-                    // Check if already connected
+                    // Skip if already connected
                     if (connectedDevices.containsKey(address)) {
                         mainThread.post(() -> result.success(true));
                         return;
                     }
 
                     BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
-
-                    // 1. First try insecure connection (works better for some devices)
-                    BluetoothSocket socket = null;
-                    try {
-                        Log.d(TAG, "Attempting insecure connection to " + address);
-                        socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
-                        socket.connect();
-                    } catch (IOException e1) {
-                        Log.d(TAG, "Insecure connection failed, trying secure", e1);
-                        try {
-                            // 2. Fall back to secure connection
-                            socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-                            socket.connect();
-                        } catch (IOException e2) {
-                            Log.e(TAG, "Both connection attempts failed", e2);
-                            handleConnectionError(result, "Connection failed", e2, ERROR_CONNECTION_FAILED);
-                            return;
-                        }
+                    if (device == null) {
+                        handleConnectionError(result, "Device not found", null, ERROR_DEVICE_NOT_FOUND);
+                        return;
                     }
 
-                    // 3. If we get here, connection succeeded
+                    // Connection strategy: Try multiple methods
+                    BluetoothSocket socket = tryAllConnectionMethods(device);
+
+                    if (socket == null) {
+                        handleConnectionError(result, "All connection attempts failed", null, ERROR_CONNECTION_FAILED);
+                        return;
+                    }
+
+                    // Verify connection
+                    if (!testConnection(socket)) {
+                        socket.close();
+                        handleConnectionError(result, "Connection verification failed", null, ERROR_CONNECTION_FAILED);
+                        return;
+                    }
+
                     connectedDevices.put(address, socket);
                     updateConnectionState(address, STATE_CONNECTED);
-
-                    // 4. Start a keep-alive monitor
                     startConnectionMonitor(address, socket, timeout);
-
                     mainThread.post(() -> result.success(true));
 
                 } catch (Exception e) {
-                    handleConnectionError(result, "Connection error", e, ERROR_CONNECTION_FAILED);
+                    Log.e(TAG, "Connection failed for " + address, e);
+                    handleConnectionError(result, "Connection failed: " + e.getMessage(), e, ERROR_CONNECTION_FAILED);
                 }
             }
         });
     }
 
+    private BluetoothSocket tryAllConnectionMethods(BluetoothDevice device) throws IOException {
+        BluetoothSocket socket = null;
+
+        // Method 1: Standard secure connection
+        try {
+            Log.d(TAG, "Attempting secure connection");
+            socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
+            socket.connect();
+            return socket;
+        } catch (IOException e) {
+            Log.w(TAG, "Secure connection failed", e);
+            closeQuietly(socket);
+        }
+
+        // Method 2: Insecure connection
+        try {
+            Log.d(TAG, "Attempting insecure connection");
+            socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
+            socket.connect();
+            return socket;
+        } catch (IOException e) {
+            Log.w(TAG, "Insecure connection failed", e);
+            closeQuietly(socket);
+        }
+
+        // Method 3: Reflection fallback (for some Samsung/Motorola devices)
+        try {
+            Log.d(TAG, "Attempting reflection method");
+            Method m = device.getClass().getMethod("createRfcommSocket", int.class);
+            socket = (BluetoothSocket) m.invoke(device, 1); // Channel 1
+            socket.connect();
+            return socket;
+        } catch (Exception e) {
+            Log.w(TAG, "Reflection method failed", e);
+            closeQuietly(socket);
+        }
+
+        return null;
+    }
+
+    private boolean testConnection(BluetoothSocket socket) {
+        try {
+            // Simple test - check if streams are available
+            return socket.getInputStream() != null && socket.getOutputStream() != null;
+        } catch (IOException e) {
+            Log.e(TAG, "Connection test failed", e);
+            return false;
+        }
+    }
+
+    private void closeQuietly(BluetoothSocket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "Error closing socket during cleanup", e);
+            }
+        }
+    }
     private void startConnectionMonitor(String address, BluetoothSocket socket, int timeout) {
         threadPool.execute(() -> {
             try {

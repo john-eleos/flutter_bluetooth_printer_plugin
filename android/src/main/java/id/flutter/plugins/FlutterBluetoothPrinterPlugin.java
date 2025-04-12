@@ -262,31 +262,46 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 try {
                     String address = call.argument("address");
                     int timeout = call.argument("timeout") != null ?
-                            (int) call.argument("timeout") : 10000; // Default 10 seconds
+                            (int) call.argument("timeout") : 10000;
 
                     updateConnectionState(address, STATE_CONNECTING);
 
-                    BluetoothSocket socket = connectedDevices.get(address);
-                    if (socket == null) {
-                        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
-                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-
-                        try {
-                            socket.connect();
-                            connectedDevices.put(address, socket);
-                            updateConnectionState(address, STATE_CONNECTED);
-                            mainThread.post(() -> result.success(true));
-                        } catch (IOException e) {
-                            try {
-                                socket.close();
-                            } catch (IOException e2) {
-                                Log.e(TAG, "Error closing socket after failed connection", e2);
-                            }
-                            handleConnectionError(result, "Connection failed", e, ERROR_CONNECTION_FAILED);
-                        }
-                    } else {
+                    // Check if already connected
+                    if (connectedDevices.containsKey(address)) {
                         mainThread.post(() -> result.success(true));
+                        return;
                     }
+
+                    BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+
+                    // 1. First try insecure connection (works better for some devices)
+                    BluetoothSocket socket = null;
+                    try {
+                        Log.d(TAG, "Attempting insecure connection to " + address);
+                        socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
+                        socket.connect();
+                    } catch (IOException e1) {
+                        Log.d(TAG, "Insecure connection failed, trying secure", e1);
+                        try {
+                            // 2. Fall back to secure connection
+                            socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
+                            socket.connect();
+                        } catch (IOException e2) {
+                            Log.e(TAG, "Both connection attempts failed", e2);
+                            handleConnectionError(result, "Connection failed", e2, ERROR_CONNECTION_FAILED);
+                            return;
+                        }
+                    }
+
+                    // 3. If we get here, connection succeeded
+                    connectedDevices.put(address, socket);
+                    updateConnectionState(address, STATE_CONNECTED);
+
+                    // 4. Start a keep-alive monitor
+                    startConnectionMonitor(address, socket, timeout);
+
+                    mainThread.post(() -> result.success(true));
+
                 } catch (Exception e) {
                     handleConnectionError(result, "Connection error", e, ERROR_CONNECTION_FAILED);
                 }
@@ -294,37 +309,100 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         });
     }
 
+    private void startConnectionMonitor(String address, BluetoothSocket socket, int timeout) {
+        threadPool.execute(() -> {
+            try {
+                while (connectedDevices.containsKey(address)) {
+                    // Simple keep-alive check
+                    if (!socket.isConnected()) {
+                        Log.w(TAG, "Socket unexpectedly disconnected: " + address);
+                        disconnectDevice(address);
+                        break;
+                    }
+
+                    // Optional: Send null byte periodically if needed
+                    try {
+                        socket.getOutputStream().write(0x00);
+                    } catch (IOException e) {
+                        Log.e(TAG, "Keep-alive failed for " + address, e);
+                        disconnectDevice(address);
+                        break;
+                    }
+
+                    Thread.sleep(Math.min(timeout, 5000)); // Check every 5s or timeout period
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
     private void disconnectDevice(MethodCall call, Result result) {
         threadPool.execute(() -> {
             synchronized (this) {
-                try {
-                    String address = call.argument("address");
-                    updateConnectionState(address, STATE_DISCONNECTING);
+                String address = call.argument("address");
+                if (address == null || address.isEmpty()) {
+                    mainThread.post(() -> result.error("invalid_address", "Device address cannot be empty", null));
+                    return;
+                }
 
-                    // Stop any active reading
+                Log.d(TAG, "Disconnecting device: " + address);
+                updateConnectionState(address, STATE_DISCONNECTING);
+
+                try {
+                    // 1. Stop any active reading thread first
                     stopReadingThread(address);
 
-                    // Close socket
+                    // 2. Get and remove the socket from connected devices
                     BluetoothSocket socket = connectedDevices.remove(address);
+
                     if (socket != null) {
+                        // 3. Clean up output stream
                         try {
                             OutputStream out = socket.getOutputStream();
                             out.flush();
+                            Thread.sleep(50); // Small delay to ensure flush completes
                             out.close();
-                            socket.close();
                         } catch (IOException e) {
-                            Log.e(TAG, "Error closing socket", e);
+                            Log.w(TAG, "Error closing output stream for " + address, e);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
                         }
+
+                        // 4. Clean up input stream
+                        try {
+                            InputStream in = socket.getInputStream();
+                            in.close();
+                        } catch (IOException e) {
+                            Log.w(TAG, "Error closing input stream for " + address, e);
+                        }
+
+                        // 5. Close the socket
+                        try {
+                            socket.close();
+                            Log.d(TAG, "Successfully closed socket for " + address);
+                        } catch (IOException e) {
+                            Log.e(TAG, "Error closing socket for " + address, e);
+                            throw e; // Re-throw to trigger error result
+                        }
+                    } else {
+                        Log.w(TAG, "No active socket found for " + address);
                     }
 
+                    // 6. Update state and return success
                     updateConnectionState(address, STATE_DISCONNECTED);
                     mainThread.post(() -> result.success(true));
+
                 } catch (Exception e) {
-                    mainThread.post(() -> result.error("disconnect_error", e.getMessage(), null));
+                    Log.e(TAG, "Failed to disconnect device: " + address, e);
+                    updateConnectionState(address, STATE_DISCONNECTED); // Ensure state is updated even on failure
+                    mainThread.post(() -> result.error("disconnect_failed",
+                            "Failed to disconnect: " + e.getMessage(), null));
                 }
             }
         });
     }
+
 
     private void startReading(MethodCall call, Result result) {
         threadPool.execute(() -> {

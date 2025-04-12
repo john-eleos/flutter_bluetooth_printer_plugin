@@ -41,7 +41,7 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry;
 
-public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler, 
+public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler,
         PluginRegistry.RequestPermissionsResultListener, EventChannel.StreamHandler {
 
     // Constants
@@ -49,13 +49,13 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
     private static final int PERMISSION_REQUEST_CODE = 919191;
     private static final int READ_TIMEOUT_MS = 5000;
-    
+
     // Connection states
     private static final int STATE_DISCONNECTED = 0;
     private static final int STATE_CONNECTING = 1;
     private static final int STATE_CONNECTED = 2;
     private static final int STATE_DISCONNECTING = 3;
-    
+
     // Error codes
     private static final int ERROR_PERMISSION_DENIED = 100;
     private static final int ERROR_BLUETOOTH_OFF = 101;
@@ -78,7 +78,8 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     private MethodChannel channel;
     private Activity activity;
     private FlutterPluginBinding flutterPluginBinding;
-    private final Map<Object, EventChannel.EventSink> sinkList = new HashMap<>();
+    private final Map<Object, EventChannel.EventSink> discoverySinks = new HashMap<>();
+    private final Map<String, Map<Object, EventChannel.EventSink>> readSinks = new HashMap<>();
 
     // Broadcast receivers
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
@@ -88,7 +89,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             if (BluetoothDevice.ACTION_FOUND.equals(action)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 final Map<String, Object> map = deviceToMap(device);
-                for (EventChannel.EventSink sink : sinkList.values()) {
+                for (EventChannel.EventSink sink : discoverySinks.values()) {
                     sink.success(map);
                 }
             }
@@ -104,7 +105,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 if (value == BluetoothAdapter.STATE_OFF) {
                     Map<String, Object> data = new HashMap<>();
                     data.put("code", 1);
-                    for (EventChannel.EventSink sink : sinkList.values()) {
+                    for (EventChannel.EventSink sink : discoverySinks.values()) {
                         sink.success(data);
                     }
                 } else if (value == BluetoothAdapter.STATE_ON) {
@@ -117,7 +118,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
         this.flutterPluginBinding = binding;
-        
+
         // Initialize Bluetooth adapter
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             BluetoothManager bluetoothManager = binding.getApplicationContext().getSystemService(BluetoothManager.class);
@@ -130,10 +131,24 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         channel = new MethodChannel(binding.getBinaryMessenger(), "maseka.dev/flutter_bluetooth_printer");
         channel.setMethodCallHandler(this);
 
-        // Set up event channel for discovery
-        EventChannel discoveryChannel = new EventChannel(binding.getBinaryMessenger(), 
+        // Set up event channels
+        EventChannel discoveryChannel = new EventChannel(binding.getBinaryMessenger(),
                 "maseka.dev/flutter_bluetooth_printer/discovery");
-        discoveryChannel.setStreamHandler(this);
+        discoveryChannel.setStreamHandler(new EventChannel.StreamHandler() {
+            @Override
+            public void onListen(Object arguments, EventChannel.EventSink events) {
+                discoverySinks.put(arguments, events);
+                startDiscovery(true);
+            }
+
+            @Override
+            public void onCancel(Object arguments) {
+                discoverySinks.remove(arguments);
+                if (discoverySinks.isEmpty()) {
+                    stopDiscovery();
+                }
+            }
+        });
 
         // Register broadcast receivers
         IntentFilter discoveryFilter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
@@ -147,7 +162,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
         // Clean up all resources
         cleanupResources();
-        
+
         channel.setMethodCallHandler(null);
         flutterPluginBinding.getApplicationContext().unregisterReceiver(discoveryReceiver);
         flutterPluginBinding.getApplicationContext().unregisterReceiver(stateReceiver);
@@ -159,7 +174,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             thread.cancel();
         }
         readThreads.clear();
-        
+
         // Close all sockets
         for (BluetoothSocket socket : connectedDevices.values()) {
             try {
@@ -169,7 +184,11 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             }
         }
         connectedDevices.clear();
-        
+
+        // Clear all sinks
+        discoverySinks.clear();
+        readSinks.clear();
+
         // Shutdown thread pool
         threadPool.shutdownNow();
     }
@@ -177,13 +196,18 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
         switch (call.method) {
+            case "writeData":
+                String address = call.argument("address");
+                byte[] data = call.argument("data");
+                writeDataNew(address, data, result);
+                break;
             case "connect":
                 connectDevice(call, result);
                 break;
             case "disconnect":
                 disconnectDevice(call, result);
                 break;
-            case "read":
+            case "startReading":
                 startReading(call, result);
                 break;
             case "stopReading":
@@ -195,10 +219,32 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             case "getState":
                 getBluetoothState(result);
                 break;
+            case "createReadChannel":
+                createReadChannel(call, result);
+                break;
             default:
                 result.notImplemented();
                 break;
         }
+    }
+
+    private void writeDataNew(String address, byte[] data, Result result) {
+        threadPool.execute(() -> {
+            try {
+                BluetoothSocket socket = connectedDevices.get(address);
+                if (socket == null) {
+                    result.error("not_connected", "Device not connected", null);
+                    return;
+                }
+
+                OutputStream outputStream = socket.getOutputStream();
+                outputStream.write(data);
+                outputStream.flush();
+                mainThread.post(() -> result.success(null));
+            } catch (IOException e) {
+                mainThread.post(() -> result.error("write_error", e.getMessage(), null));
+            }
+        });
     }
 
     private void connectDevice(MethodCall call, Result result) {
@@ -206,16 +252,16 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             synchronized (this) {
                 try {
                     String address = call.argument("address");
-                    int timeout = call.argument("timeout") != null ? 
+                    int timeout = call.argument("timeout") != null ?
                             (int) call.argument("timeout") : 10000; // Default 10 seconds
 
                     updateConnectionState(address, STATE_CONNECTING);
-                    
+
                     BluetoothSocket socket = connectedDevices.get(address);
                     if (socket == null) {
                         BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
                         socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-                        
+
                         try {
                             socket.connect();
                             connectedDevices.put(address, socket);
@@ -245,10 +291,10 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 try {
                     String address = call.argument("address");
                     updateConnectionState(address, STATE_DISCONNECTING);
-                    
+
                     // Stop any active reading
                     stopReadingThread(address);
-                    
+
                     // Close socket
                     BluetoothSocket socket = connectedDevices.remove(address);
                     if (socket != null) {
@@ -261,7 +307,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                             Log.e(TAG, "Error closing socket", e);
                         }
                     }
-                    
+
                     updateConnectionState(address, STATE_DISCONNECTED);
                     mainThread.post(() -> result.success(true));
                 } catch (Exception e) {
@@ -277,7 +323,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 try {
                     String address = call.argument("address");
                     BluetoothSocket socket = connectedDevices.get(address);
-                    
+
                     if (socket == null) {
                         mainThread.post(() -> result.error("not_connected", "Device not connected", null));
                         return;
@@ -304,6 +350,34 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             String address = call.argument("address");
             stopReadingThread(address);
             mainThread.post(() -> result.success(true));
+        });
+    }
+
+    private void createReadChannel(MethodCall call, final Result result) {
+        String address = call.argument("address");
+        String channelName = "maseka.dev/flutter_bluetooth_printer/read/" + address;
+
+        EventChannel readChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), channelName);
+        readChannel.setStreamHandler(new EventChannel.StreamHandler() {
+            @Override
+            public void onListen(Object arguments, EventChannel.EventSink events) {
+                if (!readSinks.containsKey(address)) {
+                    readSinks.put(address, new HashMap<>());
+                }
+                readSinks.get(address).put(arguments, events);
+                result.success(null);
+            }
+
+            @Override
+            public void onCancel(Object arguments) {
+                if (readSinks.containsKey(address)) {
+                    readSinks.get(address).remove(arguments);
+                    if (readSinks.get(address).isEmpty()) {
+                        readSinks.remove(address);
+                        stopReadingThread(address);
+                    }
+                }
+            }
         });
     }
 
@@ -406,14 +480,25 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 try {
                     long startTime = System.currentTimeMillis();
                     bytes = inputStream.read(buffer);
-                    
+
                     if (System.currentTimeMillis() - startTime > READ_TIMEOUT_MS) {
                         throw new IOException("Read operation timed out");
                     }
-                    
+
                     if (bytes > 0) {
                         final byte[] data = Arrays.copyOf(buffer, bytes);
                         mainThread.post(() -> {
+                            // Notify through both method channel and event channel
+                            if (readSinks.containsKey(address)) {
+                                Map<String, Object> eventData = new HashMap<>();
+                                eventData.put("address", address);
+                                eventData.put("data", data);
+                                for (EventChannel.EventSink sink : readSinks.get(address).values()) {
+                                    sink.success(eventData);
+                                }
+                            }
+
+                            // Legacy method channel notification
                             Map<String, Object> result = new HashMap<>();
                             result.put("address", address);
                             result.put("data", data);
@@ -423,6 +508,18 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 } catch (IOException e) {
                     if (isRunning) {
                         mainThread.post(() -> {
+                            // Notify through both method channel and event channel
+                            if (readSinks.containsKey(address)) {
+                                Map<String, Object> errorEvent = new HashMap<>();
+                                errorEvent.put("address", address);
+                                errorEvent.put("error", e.getMessage());
+                                errorEvent.put("errorType", e.getClass().getSimpleName());
+                                for (EventChannel.EventSink sink : readSinks.get(address).values()) {
+                                    sink.error("read_error", e.getMessage(), errorEvent);
+                                }
+                            }
+
+                            // Legacy method channel notification
                             Map<String, Object> errorResult = new HashMap<>();
                             errorResult.put("address", address);
                             errorResult.put("error", e.getMessage());
@@ -543,7 +640,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         Set<BluetoothDevice> bonded = bluetoothAdapter.getBondedDevices();
         for (BluetoothDevice device : bonded) {
             final Map<String, Object> map = deviceToMap(device);
-            for (EventChannel.EventSink sink : sinkList.values()) {
+            for (EventChannel.EventSink sink : discoverySinks.values()) {
                 sink.success(map);
             }
         }
@@ -590,7 +687,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 if (result != PackageManager.PERMISSION_GRANTED) {
                     Map<String, Object> data = new HashMap<>();
                     data.put("code", 3); // Permission denied
-                    notifySinks(data);
+                    notifyDiscoverySinks(data);
                     return true;
                 }
             }
@@ -598,7 +695,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             if (!bluetoothAdapter.isEnabled()) {
                 Map<String, Object> data = new HashMap<>();
                 data.put("code", 1); // Bluetooth off
-                notifySinks(data);
+                notifyDiscoverySinks(data);
                 return true;
             }
 
@@ -608,23 +705,23 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         return false;
     }
 
-    private void notifySinks(Map<String, Object> data) {
-        for (EventChannel.EventSink sink : sinkList.values()) {
+    private void notifyDiscoverySinks(Map<String, Object> data) {
+        for (EventChannel.EventSink sink : discoverySinks.values()) {
             sink.success(data);
         }
     }
 
-    // EventChannel.StreamHandler methods
+    // EventChannel.StreamHandler methods (for discovery)
     @Override
     public void onListen(Object arguments, EventChannel.EventSink events) {
-        sinkList.put(arguments, events);
+        discoverySinks.put(arguments, events);
         startDiscovery(true);
     }
 
     @Override
     public void onCancel(Object arguments) {
-        sinkList.remove(arguments);
-        if (sinkList.isEmpty()) {
+        discoverySinks.remove(arguments);
+        if (discoverySinks.isEmpty()) {
             stopDiscovery();
         }
     }

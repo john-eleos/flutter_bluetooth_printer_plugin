@@ -3,6 +3,9 @@ part of '../flutter_bluetooth_printer_library.dart';
 class DiscoveryResult extends DiscoveryState {
   final List<BluetoothDevice> devices;
   DiscoveryResult({required this.devices});
+
+  @override
+  String toString() => 'DiscoveryResult(devices: $devices)';
 }
 
 enum PaperSize {
@@ -14,22 +17,22 @@ enum PaperSize {
   final double paperWidthMM;
   final String name;
   const PaperSize(
-    this.width,
-    this.paperWidthMM,
-    this.name,
-  );
+      this.width,
+      this.paperWidthMM,
+      this.name,
+      );
+
+  @override
+  String toString() => name;
 }
 
 class FlutterBluetoothPrinter {
-
   // Create a single instance for reading operations
   static final _reader = MethodChannelBluetoothPrinter();
 
-
   static Stream<DiscoveryState> _discovery() async* {
     final result = <BluetoothDevice>[];
-    await for (final state
-        in FlutterBluetoothPrinterPlatform.instance.discovery) {
+    await for (final state in FlutterBluetoothPrinterPlatform.instance.discovery) {
       if (state is BluetoothDevice) {
         result.add(state);
         yield DiscoveryResult(devices: result.toSet().toList());
@@ -45,7 +48,10 @@ class FlutterBluetoothPrinter {
 
   static Stream<DiscoveryState> get discovery => _discovery();
 
-  /* NEW READING FUNCTIONALITY */
+  /* TWO-WAY COMMUNICATION FUNCTIONALITY */
+  /// Starts reading data from the device using callback-based approach
+  /// [Deprecated] Prefer using [readStream] for a more modern stream-based approach
+  @Deprecated('Prefer using readStream for better stream handling')
   static Future<bool> startReading({
     required String address,
     required void Function(String address, Uint8List data) onDataReceived,
@@ -58,16 +64,43 @@ class FlutterBluetoothPrinter {
     );
   }
 
+  /// Stops reading data from the device
   static Future<bool> stopReading(String address) {
     return _reader.stopReading(address);
   }
-  /* END OF NEW READING FUNCTIONALITY */
 
+  /// Creates a continuous stream of data from the Bluetooth device
+  /// This is the preferred way to handle incoming data
+  static Stream<Uint8List> readStream(String address) {
+    return _reader.createReadStream(address);
+  }
+
+  /// Sends raw data to the connected Bluetooth device
+  static Future<void> writeData({
+    required String address,
+    required Uint8List data,
+  }) {
+    return _reader.writeData(address, data);
+  }
+
+  /// Sends a string command to the connected Bluetooth device
+  static Future<void> sendCommand({
+    required String address,
+    required String command,
+  }) {
+    return writeData(
+      address: address,
+      data: Uint8List.fromList(command.codeUnits),
+    );
+  }
+  /* END OF TWO-WAY COMMUNICATION FUNCTIONALITY */
+
+  /* PRINTING FUNCTIONALITY */
   /// Prints raw bytes to the printer
   static Future<bool> printBytes({
     required String address,
     required Uint8List data,
-    required bool keepConnected,
+    bool keepConnected = false,
     int maxBufferSize = 512,
     int delayTime = 120,
     ProgressCallback? onProgress,
@@ -82,14 +115,14 @@ class FlutterBluetoothPrinter {
     );
   }
 
-  /// Calculates estimated printing duration
+  /// Calculates estimated printing duration in milliseconds
   static double calculatePrintingDurationInMilliseconds(
-    int heightInDots,
-    double printSpeed,
-    int dotsPerLine,
-    double paperWidth,
-    int dotsPerLineHeight,
-  ) {
+      int heightInDots,
+      double printSpeed,
+      int dotsPerLine,
+      double paperWidth,
+      int dotsPerLineHeight,
+      ) {
     final numberOfLines = heightInDots / dotsPerLineHeight;
     final linesPerSecond = printSpeed / paperWidth;
     final durationSeconds = numberOfLines / linesPerSecond;
@@ -106,7 +139,7 @@ class FlutterBluetoothPrinter {
     ProgressCallback? onProgress,
     int addFeeds = 0,
     bool useImageRaster = true,
-    required bool keepConnected,
+    bool keepConnected = false,
     int maxBufferSize = 512,
     int delayTime = 120,
   }) async {
@@ -127,11 +160,11 @@ class FlutterBluetoothPrinter {
 
       final additional = paperSize == PaperSize.mm58
           ? <int>[
-              for (int i = 0; i < addFeeds; i++) ...Commands.carriageReturn,
-            ]
+        for (int i = 0; i < addFeeds; i++) ...Commands.carriageReturn,
+      ]
           : <int>[
-              for (int i = 0; i < addFeeds; i++) ...Commands.lineFeed,
-            ];
+        for (int i = 0; i < addFeeds; i++) ...Commands.lineFeed,
+      ];
 
       return await printBytes(
         address: address,
@@ -149,7 +182,9 @@ class FlutterBluetoothPrinter {
       }
     }
   }
+  /* END OF PRINTING FUNCTIONALITY */
 
+  /* DEVICE MANAGEMENT */
   /// Enables Bluetooth if disabled
   static Future<void> enableBluetooth() {
     return FlutterBluetoothPrinterPlatform.instance.enableBluetooth();
@@ -200,5 +235,10 @@ class FlutterBluetoothPrinter {
   static Future<BluetoothState> getState() {
     return FlutterBluetoothPrinterPlatform.instance.checkState();
   }
-}
 
+  /// Disposes all resources
+  static void dispose() {
+    _reader.dispose();
+  }
+/* END OF DEVICE MANAGEMENT */
+}

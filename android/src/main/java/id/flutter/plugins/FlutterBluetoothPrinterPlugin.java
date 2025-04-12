@@ -143,11 +143,14 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             @Override
             public void onListen(Object arguments, EventChannel.EventSink events) {
                 readEventSink = events;
+                // Just log that the stream is opened
+                Log.d(TAG, "Read stream opened for device: " + arguments);
             }
 
             @Override
             public void onCancel(Object arguments) {
                 readEventSink = null;
+                Log.d(TAG, "Read stream closed for device: " + arguments);
             }
         });
 
@@ -331,6 +334,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     BluetoothSocket socket = connectedDevices.get(address);
 
                     if (socket == null) {
+                        Log.e(TAG, "Cannot start reading - device not connected: " + address);
                         mainThread.post(() -> result.error("not_connected", "Device not connected", null));
                         return;
                     }
@@ -342,9 +346,11 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     ReadThread readThread = new ReadThread(socket, address);
                     readThreads.put(address, readThread);
                     readThread.start();
+                    Log.d(TAG, "Bluetooth read thread started for device: " + address);
 
                     mainThread.post(() -> result.success(true));
                 } catch (Exception e) {
+                    Log.e(TAG, "Error starting read thread: " + e.getMessage(), e);
                     mainThread.post(() -> result.error("read_error", e.getMessage(), null));
                 }
             }

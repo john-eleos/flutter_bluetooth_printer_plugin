@@ -7,9 +7,9 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
     FlutterBluetoothPrinterPlatform.instance = MethodChannelBluetoothPrinter();
   }
 
-  final _methodChannel = const MethodChannel('maseka.dev/flutter_bluetooth_printer');
-  final _discoveryChannel = const EventChannel('maseka.dev/flutter_bluetooth_printer/discovery');
-  final _readChannel = const EventChannel('maseka.dev/flutter_bluetooth_printer/read');
+  final MethodChannel _methodChannel = const MethodChannel('maseka.dev/flutter_bluetooth_printer');
+  final EventChannel _discoveryChannel = const EventChannel('maseka.dev/flutter_bluetooth_printer/discovery');
+  final EventChannel _readChannel = const EventChannel('maseka.dev/flutter_bluetooth_printer/read');
 
   // Track active streams
   final Map<String, StreamController<Uint8List>> _readControllers = {};
@@ -51,7 +51,7 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
         case 'onConnectionStateChanged':
           final address = call.arguments['address'] as String;
           final state = call.arguments['state'] as int;
-          // Handle connection state changes
+          // Handle connection state changes if needed
           break;
       }
       return null;
@@ -92,6 +92,8 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
       }
     });
   }
+
+
 
   @override
   Future<bool> connect(String address, {int timeout = 10000}) async {
@@ -159,11 +161,14 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
     final controller = StreamController<Uint8List>();
     _readControllers[address] = controller;
 
-    _methodChannel.invokeMethod('startReading', {
-      'address': address,
-      'timeoutMs': timeoutMs,
-    });
-    // Listen to the unified read channel
+    // _methodChannel.invokeMethod('startReading', {
+    //   'address': address,
+    //   'timeoutMs': timeoutMs,
+    // });
+
+    // we're assuming the connection call intiated the stream
+
+    // Listen to the read channel
     _readSubscriptions[address] = _readChannel.receiveBroadcastStream().listen(
           (data) {
         if (data is Map &&
@@ -199,7 +204,7 @@ class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
 
   @override
   Future<bool> startReading(
-      String address, {
+      { required String address,
         DataReceivedCallback? onDataReceived,
         ErrorCallback? onError,
         int timeoutMs = 5000,

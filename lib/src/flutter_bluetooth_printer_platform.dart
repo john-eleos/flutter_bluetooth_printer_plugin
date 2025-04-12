@@ -36,7 +36,7 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
     _instance = instance;
   }
 
-  final connectionStateNotifier = ValueNotifier<BluetoothConnectionState>(
+  final ValueNotifier<BluetoothConnectionState> connectionStateNotifier = ValueNotifier<BluetoothConnectionState>(
     BluetoothConnectionState.idle,
   );
 
@@ -61,25 +61,19 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
   /// Checks the current Bluetooth state
   Future<BluetoothState> checkState();
 
-
-  // Update read methods to match timeout and buffer size from Java
-
-  Future<bool> startReading(
-      String address, {
-        DataReceivedCallback? onDataReceived,
-        ErrorCallback? onError,
-        int timeoutMs = 5000, // Add timeout parameter
-      });
+  /// Starts reading data from the device
+  Future<bool> startReading({
+    required String address,
+    DataReceivedCallback? onDataReceived,
+    ErrorCallback? onError,
+    int timeoutMs = 5000, // Timeout parameter
+  });
 
   /// Stops reading data from the device
   Future<bool> stopReading(String address);
 
   /// Creates a continuous stream of data from the Bluetooth device
-  /// This is the preferred way to handle incoming data
-
-
   Stream<Uint8List> createReadStream(String address, {int timeoutMs = 5000});
-
 
   /// Writes data to the connected Bluetooth device
   Future<void> writeData(String address, Uint8List data);
@@ -89,7 +83,6 @@ abstract class FlutterBluetoothPrinterPlatform extends PlatformInterface {
 
   /// Requests necessary Bluetooth permissions
   Future<void> requestPermissions();
-
 
   /// Disposes all resources and cleans up
   @mustCallSuper
@@ -112,9 +105,7 @@ class BluetoothDevice extends DiscoveryState {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-          other is BluetoothDevice &&
-              runtimeType == other.runtimeType &&
-              address == other.address;
+          (other is BluetoothDevice && runtimeType == other.runtimeType && address == other.address);
 
   @override
   int get hashCode => address.hashCode;

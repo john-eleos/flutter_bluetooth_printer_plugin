@@ -23,13 +23,10 @@ import androidx.annotation.NonNull;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
@@ -41,47 +38,9 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry;
 
-public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler,
-        PluginRegistry.RequestPermissionsResultListener, EventChannel.StreamHandler {
-
-    // Constants
-    private static final String TAG = "BluetoothPrinterPlugin";
-    private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
-    private static final int PERMISSION_REQUEST_CODE = 919191;
-    private static final int READ_TIMEOUT_MS = 5000;
-
-    // Connection states
-    private static final int STATE_DISCONNECTED = 0;
-    private static final int STATE_CONNECTING = 1;
-    private static final int STATE_CONNECTED = 2;
-    private static final int STATE_DISCONNECTING = 3;
-
-    // Error codes
-    private static final int ERROR_PERMISSION_DENIED = 100;
-    private static final int ERROR_BLUETOOTH_OFF = 101;
-    private static final int ERROR_DEVICE_NOT_FOUND = 102;
-    private static final int ERROR_CONNECTION_FAILED = 103;
-    private static final int ERROR_IO_EXCEPTION = 104;
-    private static final int ERROR_READ_TIMEOUT = 105;
-
-    // Thread management
-    private final ExecutorService threadPool = Executors.newCachedThreadPool();
-    private final Handler mainThread = new Handler(Looper.getMainLooper());
-
-    // Bluetooth components
-    private BluetoothAdapter bluetoothAdapter;
-    private final Map<String, BluetoothSocket> connectedDevices = new HashMap<>();
-    private final Map<String, ReadThread> readThreads = new HashMap<>();
-    private final Map<String, Integer> connectionStates = new HashMap<>();
-
-    // Flutter components
-    private MethodChannel channel;
-    private Activity activity;
-    private FlutterPluginBinding flutterPluginBinding;
-    private EventChannel.EventSink readEventSink;
-    private final Map<Object, EventChannel.EventSink> discoverySinks = new HashMap<>();
-
-    // Broadcast receivers
+public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler, PluginRegistry.RequestPermissionsResultListener, EventChannel.StreamHandler {
+    private final Map<Object, EventChannel.EventSink> sinkList = new HashMap<>();
+    private final Map<String, EventChannel.EventSink> readSinkList = new HashMap<>();
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -89,13 +48,16 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             if (BluetoothDevice.ACTION_FOUND.equals(action)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 final Map<String, Object> map = deviceToMap(device);
-                for (EventChannel.EventSink sink : discoverySinks.values()) {
+
+                for (EventChannel.EventSink sink : sinkList.values()) {
                     sink.success(map);
                 }
             }
         }
     };
-
+    private MethodChannel channel;
+    private Activity activity;
+    private BluetoothAdapter bluetoothAdapter;
     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -105,7 +67,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 if (value == BluetoothAdapter.STATE_OFF) {
                     Map<String, Object> data = new HashMap<>();
                     data.put("code", 1);
-                    for (EventChannel.EventSink sink : discoverySinks.values()) {
+                    for (EventChannel.EventSink sink : sinkList.values()) {
                         sink.success(data);
                     }
                 } else if (value == BluetoothAdapter.STATE_ON) {
@@ -114,636 +76,38 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             }
         }
     };
+    private FlutterPluginBinding flutterPluginBinding;
+    private final Map<String, BluetoothSocket> connectedDevices = new HashMap<>();
+    private Handler mainThread;
+    private volatile boolean isReading; // Flag to control reading thread
 
     @Override
-    public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
-        this.flutterPluginBinding = binding;
+    public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
+        this.flutterPluginBinding = flutterPluginBinding;
+        this.mainThread = new Handler(Looper.getMainLooper());
 
-        // Initialize Bluetooth adapter
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            BluetoothManager bluetoothManager = binding.getApplicationContext().getSystemService(BluetoothManager.class);
+        if (SDK_INT >= Build.VERSION_CODES.M) {
+            BluetoothManager bluetoothManager = flutterPluginBinding.getApplicationContext().getSystemService(BluetoothManager.class);
             bluetoothAdapter = bluetoothManager.getAdapter();
         } else {
             bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         }
 
-        // Set up method channel
-        channel = new MethodChannel(binding.getBinaryMessenger(), "maseka.dev/flutter_bluetooth_printer");
+        channel = new MethodChannel(flutterPluginBinding.getBinaryMessenger(), "maseka.dev/flutter_bluetooth_printer");
         channel.setMethodCallHandler(this);
 
-        // Set up discovery event channel
-        EventChannel discoveryChannel = new EventChannel(binding.getBinaryMessenger(),
-                "maseka.dev/flutter_bluetooth_printer/discovery");
+        // Initialize the read channel
+        EventChannel readChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), "maseka.dev/flutter_bluetooth_printer/read");
+        readChannel.setStreamHandler(this);
+
+        EventChannel discoveryChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), "maseka.dev/flutter_bluetooth_printer/discovery");
         discoveryChannel.setStreamHandler(this);
 
-        // Set up single read event channel
-        EventChannel readChannel = new EventChannel(binding.getBinaryMessenger(),
-                "maseka.dev/flutter_bluetooth_printer/read");
-        readChannel.setStreamHandler(new EventChannel.StreamHandler() {
-            @Override
-            public void onListen(Object arguments, EventChannel.EventSink events) {
-                readEventSink = events;
-                // Just log that the stream is opened
-                Log.d(TAG, "Read stream opened for device: " + arguments);
-            }
-
-            @Override
-            public void onCancel(Object arguments) {
-                readEventSink = null;
-                Log.d(TAG, "Read stream closed for device: " + arguments);
-            }
-        });
-
-        // Register broadcast receivers
-        IntentFilter discoveryFilter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-        binding.getApplicationContext().registerReceiver(discoveryReceiver, discoveryFilter);
+        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+        flutterPluginBinding.getApplicationContext().registerReceiver(discoveryReceiver, filter);
 
         IntentFilter stateFilter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
-        binding.getApplicationContext().registerReceiver(stateReceiver, stateFilter);
-    }
-
-    @Override
-    public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
-        // Clean up all resources
-        cleanupResources();
-
-        channel.setMethodCallHandler(null);
-        flutterPluginBinding.getApplicationContext().unregisterReceiver(discoveryReceiver);
-        flutterPluginBinding.getApplicationContext().unregisterReceiver(stateReceiver);
-    }
-
-    private void cleanupResources() {
-        // Stop all read threads
-        for (ReadThread thread : readThreads.values()) {
-            thread.cancel();
-        }
-        readThreads.clear();
-
-        // Close all sockets
-        for (BluetoothSocket socket : connectedDevices.values()) {
-            try {
-                socket.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing socket", e);
-            }
-        }
-        connectedDevices.clear();
-
-        // Clear all sinks
-        discoverySinks.clear();
-
-        // Shutdown thread pool
-        threadPool.shutdownNow();
-    }
-
-    @Override
-    public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
-        switch (call.method) {
-            case "connect":
-                connectDevice(call, result);
-                break;
-            case "disconnect":
-                disconnectDevice(call, result);
-                break;
-            case "write":
-                writeData(call, result);
-                break;
-            case "writeData":
-                String address = call.argument("address");
-                byte[] data = call.argument("data");
-                writeDataNew(address, data, result);
-                break;
-            case "startReading":
-                startReading(call, result);
-                break;
-            case "stopReading":
-                stopReading(call, result);
-                break;
-            case "getState":
-                getBluetoothState(result);
-                break;
-            case "enableBluetooth":
-                enableBluetooth(result);
-                break;
-            case "requestPermissions":
-                requestPermissions(result);
-                break;
-            case "createReadChannel":
-                createReadChannel(call, result);
-                break;
-            default:
-                result.notImplemented();
-                break;
-        }
-    }
-
-    private void writeDataNew(String address, byte[] data, Result result) {
-        threadPool.execute(() -> {
-            try {
-                BluetoothSocket socket = connectedDevices.get(address);
-                if (socket == null) {
-                    result.error("not_connected", "Device not connected", null);
-                    return;
-                }
-
-                OutputStream outputStream = socket.getOutputStream();
-                outputStream.write(data);
-                outputStream.flush();
-                mainThread.post(() -> result.success(null));
-            } catch (IOException e) {
-                mainThread.post(() -> result.error("write_error", e.getMessage(), null));
-            }
-        });
-    }
-
-    private void connectDevice(MethodCall call, Result result) {
-        threadPool.execute(() -> {
-            synchronized (this) {
-                String address = call.argument("address");
-                int timeout = call.argument("timeout") != null ?
-                        (int) call.argument("timeout") : 15000;
-
-                try {
-                    updateConnectionState(address, STATE_CONNECTING);
-
-                    // Skip if already connected
-                    if (connectedDevices.containsKey(address)) {
-                        mainThread.post(() -> result.success(true));
-                        return;
-                    }
-
-                    BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
-                    if (device == null) {
-                        handleConnectionError(result, "Device not found", null, ERROR_DEVICE_NOT_FOUND);
-                        return;
-                    }
-
-                    // ======= NEW PAIRING HANDLING ======= //
-                    if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
-                        Log.d(TAG, "Device not paired, initiating pairing");
-                        boolean pairingStarted = startPairing(device);
-                        if (!pairingStarted) {
-                            handleConnectionError(result, "Pairing initiation failed", null, ERROR_CONNECTION_FAILED);
-                            return;
-                        }
-
-                        // Wait for pairing to complete with timeout
-                        if (!waitForPairingCompletion(device, 10000)) { // 10s pairing timeout
-                            handleConnectionError(result, "Pairing timed out", null, ERROR_CONNECTION_FAILED);
-                            return;
-                        }
-                    }
-                    // ======= END PAIRING HANDLING ======= //
-
-                    BluetoothSocket socket = tryAllConnectionMethods(device);
-
-                    if (socket == null) {
-                        handleConnectionError(result, "All connection attempts failed", null, ERROR_CONNECTION_FAILED);
-                        return;
-                    }
-
-                    connectedDevices.put(address, socket);
-                    updateConnectionState(address, STATE_CONNECTED);
-                    startConnectionMonitor(address, socket, timeout);
-                    mainThread.post(() -> result.success(true));
-
-                } catch (Exception e) {
-                    Log.e(TAG, "Connection failed for " + address, e);
-                    handleConnectionError(result, "Connection failed: " + e.getMessage(), e, ERROR_CONNECTION_FAILED);
-                }
-            }
-        });
-    }
-
-    // ======= NEW PAIRING METHODS ======= //
-    private boolean startPairing(BluetoothDevice device) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // Requires BLUETOOTH_ADMIN permission
-                Method method = device.getClass().getMethod("createBond");
-                return (boolean) method.invoke(device);
-            }
-            return false;
-        } catch (Exception e) {
-            Log.e(TAG, "Pairing initiation failed", e);
-            return false;
-        }
-    }
-
-    private boolean waitForPairingCompletion(BluetoothDevice device, long timeoutMillis) {
-        long startTime = System.currentTimeMillis();
-        while (System.currentTimeMillis() - startTime < timeoutMillis) {
-            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
-                return true;
-            }
-            try {
-                Thread.sleep(200);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return false;
-    }
-// ======= END PAIRING METHODS ======= //
-
-
-
-    private BluetoothSocket tryAllConnectionMethods(BluetoothDevice device) throws IOException {
-        BluetoothSocket socket = null;
-
-        // Method 1: Standard secure connection
-        try {
-            Log.d(TAG, "Attempting secure connection");
-            socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-            socket.connect();
-            return socket;
-        } catch (IOException e) {
-            Log.w(TAG, "Secure connection failed", e);
-            closeQuietly(socket);
-        }
-
-        // Method 2: Insecure connection
-        try {
-            Log.d(TAG, "Attempting insecure connection");
-            socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
-            socket.connect();
-            return socket;
-        } catch (IOException e) {
-            Log.w(TAG, "Insecure connection failed", e);
-            closeQuietly(socket);
-        }
-
-        // Method 3: Reflection fallback (for some Samsung/Motorola devices)
-        try {
-            Log.d(TAG, "Attempting reflection method");
-            Method m = device.getClass().getMethod("createRfcommSocket", int.class);
-            socket = (BluetoothSocket) m.invoke(device, 1); // Channel 1
-            socket.connect();
-            return socket;
-        } catch (Exception e) {
-            Log.w(TAG, "Reflection method failed", e);
-            closeQuietly(socket);
-        }
-
-        return null;
-    }
-
-    private boolean testConnection(BluetoothSocket socket) {
-        try {
-            // Simple test - check if streams are available
-            return socket.getInputStream() != null && socket.getOutputStream() != null;
-        } catch (IOException e) {
-            Log.e(TAG, "Connection test failed", e);
-            return false;
-        }
-    }
-
-    private void closeQuietly(BluetoothSocket socket) {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException e) {
-                Log.w(TAG, "Error closing socket during cleanup", e);
-            }
-        }
-    }
-    private void startConnectionMonitor(String address, BluetoothSocket socket, int timeout) {
-        threadPool.execute(() -> {
-            try {
-                while (connectedDevices.containsKey(address)) {
-                    // Simple keep-alive check
-                    if (!socket.isConnected()) {
-                        Log.w(TAG, "Socket unexpectedly disconnected: " + address);
-                        disconnectDevice(address);
-                        break;
-                    }
-
-                    // Optional: Send null byte periodically if needed
-                    try {
-                        socket.getOutputStream().write(0x00);
-                    } catch (IOException e) {
-                        Log.e(TAG, "Keep-alive failed for " + address, e);
-                        disconnectDevice(address);
-                        break;
-                    }
-
-                    Thread.sleep(Math.min(timeout, 5000)); // Check every 5s or timeout period
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        });
-    }
-
-    private void disconnectDevice(MethodCall call, Result result) {
-        threadPool.execute(() -> {
-            synchronized (this) {
-                String address = call.argument("address");
-                if (address == null || address.isEmpty()) {
-                    mainThread.post(() -> result.error("invalid_address", "Device address cannot be empty", null));
-                    return;
-                }
-
-                Log.d(TAG, "Disconnecting device: " + address);
-                updateConnectionState(address, STATE_DISCONNECTING);
-
-                try {
-                    // 1. Stop any active reading thread first
-                    stopReadingThread(address);
-
-                    // 2. Get and remove the socket from connected devices
-                    BluetoothSocket socket = connectedDevices.remove(address);
-
-                    if (socket != null) {
-                        // 3. Clean up output stream
-                        try {
-                            OutputStream out = socket.getOutputStream();
-                            out.flush();
-                            Thread.sleep(50); // Small delay to ensure flush completes
-                            out.close();
-                        } catch (IOException e) {
-                            Log.w(TAG, "Error closing output stream for " + address, e);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-
-                        // 4. Clean up input stream
-                        try {
-                            InputStream in = socket.getInputStream();
-                            in.close();
-                        } catch (IOException e) {
-                            Log.w(TAG, "Error closing input stream for " + address, e);
-                        }
-
-                        // 5. Close the socket
-                        try {
-                            socket.close();
-                            Log.d(TAG, "Successfully closed socket for " + address);
-                        } catch (IOException e) {
-                            Log.e(TAG, "Error closing socket for " + address, e);
-                            throw e; // Re-throw to trigger error result
-                        }
-                    } else {
-                        Log.w(TAG, "No active socket found for " + address);
-                    }
-
-                    // 6. Update state and return success
-                    updateConnectionState(address, STATE_DISCONNECTED);
-                    mainThread.post(() -> result.success(true));
-
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to disconnect device: " + address, e);
-                    updateConnectionState(address, STATE_DISCONNECTED); // Ensure state is updated even on failure
-                    mainThread.post(() -> result.error("disconnect_failed",
-                            "Failed to disconnect: " + e.getMessage(), null));
-                }
-            }
-        });
-    }
-
-
-    private void startReading(MethodCall call, Result result) {
-        threadPool.execute(() -> {
-            synchronized (this) {
-                try {
-                    String address = call.argument("address");
-                    BluetoothSocket socket = connectedDevices.get(address);
-
-                    if (socket == null) {
-                        Log.e(TAG, "Cannot start reading - device not connected: " + address);
-                        mainThread.post(() -> result.error("not_connected", "Device not connected", null));
-                        return;
-                    }
-
-                    // Stop any existing read thread
-                    stopReadingThread(address);
-
-                    // Create and start new read thread
-                    ReadThread readThread = new ReadThread(socket, address);
-                    readThreads.put(address, readThread);
-                    readThread.start();
-                    Log.d(TAG, "Bluetooth read thread started for device: " + address);
-
-                    mainThread.post(() -> result.success(true));
-                } catch (Exception e) {
-                    Log.e(TAG, "Error starting read thread: " + e.getMessage(), e);
-                    mainThread.post(() -> result.error("read_error", e.getMessage(), null));
-                }
-            }
-        });
-    }
-
-    private void stopReading(MethodCall call, Result result) {
-        threadPool.execute(() -> {
-            String address = call.argument("address");
-            stopReadingThread(address);
-            mainThread.post(() -> result.success(true));
-        });
-    }
-
-    private void createReadChannel(MethodCall call, final Result result) {
-        // No longer needed since we're using a single read channel
-        result.success(null);
-    }
-
-    private void writeData(MethodCall call, Result result) {
-        threadPool.execute(() -> {
-            synchronized (this) {
-                try {
-                    String address = call.argument("address");
-                    boolean keepConnected = call.argument("keep_connected");
-                    byte[] data = call.argument("data");
-
-                    if (data == null || data.length == 0) {
-                        mainThread.post(() -> result.error("invalid_data", "Data cannot be empty", null));
-                        return;
-                    }
-
-                    BluetoothSocket socket = connectedDevices.get(address);
-                    if (socket == null) {
-                        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
-                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-                        socket.connect();
-                    }
-
-                    try {
-                        if (keepConnected && !connectedDevices.containsKey(address)) {
-                            connectedDevices.put(address, socket);
-                        }
-
-                        InputStream inputStream = socket.getInputStream();
-                        OutputStream outputStream = socket.getOutputStream();
-
-                        // Send progress update
-                        updatePrintingProgress(data.length, 0);
-
-                        // Write data
-                        outputStream.write(data);
-                        outputStream.flush();
-
-                        // Update progress
-                        updatePrintingProgress(data.length, data.length);
-
-                        if (!keepConnected) {
-                            inputStream.close();
-                            outputStream.close();
-                        }
-
-                        mainThread.post(() -> result.success(true));
-                    } finally {
-                        if (!keepConnected) {
-                            socket.close();
-                            connectedDevices.remove(address);
-                        }
-                    }
-                } catch (Exception e) {
-                    mainThread.post(() -> result.error("write_error", e.getMessage(), null));
-                }
-            }
-        });
-    }
-
-    private void getBluetoothState(Result result) {
-        if (!ensurePermission(false)) {
-            result.success(3); // Permission denied
-            return;
-        }
-
-        if (!bluetoothAdapter.isEnabled()) {
-            result.success(1); // Bluetooth off
-            return;
-        }
-
-        final int state = bluetoothAdapter.getState();
-        if (state == BluetoothAdapter.STATE_OFF) {
-            result.success(1); // Bluetooth off
-        } else if (state == BluetoothAdapter.STATE_ON) {
-            result.success(2); // Bluetooth on
-        } else {
-            result.success(0); // Unknown state
-        }
-    }
-
-    private void enableBluetooth(Result result) {
-        if (bluetoothAdapter == null) {
-            result.error("bluetooth_unavailable", "Bluetooth is not available on this device", null);
-            return;
-        }
-
-        if (!bluetoothAdapter.isEnabled()) {
-            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            activity.startActivityForResult(enableBtIntent, PERMISSION_REQUEST_CODE);
-            result.success(true);
-        } else {
-            result.success(true);
-        }
-    }
-
-    private void requestPermissions(Result result) {
-        if (ensurePermission(true)) {
-            result.success(true);
-        } else {
-            result.success(false);
-        }
-    }
-
-    private class ReadThread extends Thread {
-        private final BluetoothSocket socket;
-        private final InputStream inputStream;
-        private volatile boolean isRunning = true;
-        private final String address;
-
-        public ReadThread(BluetoothSocket socket, String address) throws IOException {
-            this.socket = socket;
-            this.address = address;
-            this.inputStream = socket.getInputStream();
-        }
-
-        @Override
-        public void run() {
-            byte[] buffer = new byte[1024];
-            int bytes;
-
-            while (isRunning) {
-                try {
-                    long startTime = System.currentTimeMillis();
-                    bytes = inputStream.read(buffer);
-
-                    if (System.currentTimeMillis() - startTime > READ_TIMEOUT_MS) {
-                        throw new IOException("Read operation timed out");
-                    }
-
-                    if (bytes > 0 && readEventSink != null) {
-                        final byte[] data = Arrays.copyOf(buffer, bytes);
-                        mainThread.post(() -> {
-                            Map<String, Object> eventData = new HashMap<>();
-                            eventData.put("address", address);
-                            eventData.put("data", data);
-                            readEventSink.success(eventData);
-                        });
-                    }
-                } catch (IOException e) {
-                    if (isRunning) {
-                        mainThread.post(() -> {
-                            if (readEventSink != null) {
-                                Map<String, Object> errorEvent = new HashMap<>();
-                                errorEvent.put("address", address);
-                                errorEvent.put("error", e.getMessage());
-                                errorEvent.put("errorType", e.getClass().getSimpleName());
-                                readEventSink.error("read_error", e.getMessage(), errorEvent);
-                            }
-                        });
-                        cancel();
-                    }
-                    break;
-                }
-            }
-        }
-
-        public void cancel() {
-            isRunning = false;
-            try {
-                inputStream.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing input stream", e);
-            }
-        }
-    }
-
-    // Helper methods
-    private void stopReadingThread(String address) {
-        ReadThread thread = readThreads.remove(address);
-        if (thread != null) {
-            thread.cancel();
-        }
-    }
-
-    private void updateConnectionState(String address, int state) {
-        connectionStates.put(address, state);
-        mainThread.post(() -> {
-            Map<String, Object> data = new HashMap<>();
-            data.put("address", address);
-            data.put("state", state);
-            channel.invokeMethod("onConnectionStateChanged", data);
-        });
-    }
-
-    private void updatePrintingProgress(int total, int progress) {
-        mainThread.post(() -> {
-            Map<String, Object> data = new HashMap<>();
-            data.put("total", total);
-            data.put("progress", progress);
-            channel.invokeMethod("onPrintingProgress", data);
-        });
-    }
-
-    private void handleConnectionError(Result result, String message, Exception e, int errorCode) {
-        Log.e(TAG, message, e);
-        Map<String, Object> error = new HashMap<>();
-        error.put("message", e.getMessage());
-        error.put("code", errorCode);
-        mainThread.post(() -> result.error("connection_error", message, error));
+        flutterPluginBinding.getApplicationContext().registerReceiver(stateReceiver, stateFilter);
     }
 
     private Map<String, Object> deviceToMap(BluetoothDevice device) {
@@ -755,47 +119,75 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         return map;
     }
 
+    private BluetoothSocket createBluetoothSocket(String address) throws IOException {
+        final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+        UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
+        return device.createRfcommSocketToServiceRecord(uuid);
+    }
+
+    private void startReadingData(BluetoothSocket bluetoothSocket) {
+        isReading = true; // Set reading flag
+        new Thread(() -> {
+            try {
+                InputStream inputStream = bluetoothSocket.getInputStream();
+                byte[] buffer = new byte[1024]; // buffer for holding the data
+                int bytes; // bytes returned from read()
+
+                // Keep listening to the InputStream until the socket is closed
+                while (isReading) {
+                    bytes = inputStream.read(buffer);
+                    if (bytes > 0) {
+                        String readMessage = new String(buffer, 0, bytes);
+                        mainThread.post(() -> {
+                            for (EventChannel.EventSink sink : readSinkList.values()) {
+                                sink.success(readMessage);
+                            }
+                        });
+                    }
+                }
+            } catch (IOException e) {
+                Log.e("Bluetooth", "Error reading from Bluetooth socket", e);
+            }
+        }).start();
+    }
+
+    private void stopReading() {
+        isReading = false; // Stop reading
+    }
+
     private boolean ensurePermission(boolean request) {
         if (SDK_INT >= Build.VERSION_CODES.M) {
             if (SDK_INT >= 31) {
-                boolean hasBluetooth = activity.checkSelfPermission(Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED;
-                boolean hasScan = activity.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
-                boolean hasConnect = activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+                final boolean bluetooth = activity.checkSelfPermission(Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED;
+                final boolean bluetoothScan = activity.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
+                final boolean bluetoothConnect = activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
 
-                if (hasBluetooth && hasScan && hasConnect) {
+                if (bluetooth && bluetoothScan && bluetoothConnect) {
                     return true;
                 }
 
                 if (!request) return false;
-                activity.requestPermissions(new String[]{
-                        Manifest.permission.BLUETOOTH,
-                        Manifest.permission.BLUETOOTH_ADMIN,
-                        Manifest.permission.BLUETOOTH_SCAN,
-                        Manifest.permission.BLUETOOTH_CONNECT
-                }, PERMISSION_REQUEST_CODE);
+                activity.requestPermissions(new String[]{Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 919191);
             } else {
                 if (activity == null) {
                     return false;
                 }
 
-                boolean hasBluetooth = activity.checkSelfPermission(Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED;
-                boolean hasFineLocation = activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-                boolean hasCoarseLocation = activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                boolean bluetooth = activity.checkSelfPermission(Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED;
+                boolean fineLocation = activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                boolean coarseLocation = activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
 
-                if (hasBluetooth && (hasFineLocation || hasCoarseLocation)) {
+                if (bluetooth && (fineLocation || coarseLocation)) {
                     return true;
                 }
 
                 if (!request) return false;
-                activity.requestPermissions(new String[]{
-                        Manifest.permission.BLUETOOTH,
-                        Manifest.permission.BLUETOOTH_ADMIN,
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                }, PERMISSION_REQUEST_CODE);
+                activity.requestPermissions(new String[]{Manifest.permission.BLUETOOTH, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, 919191);
             }
+
             return false;
         }
+
         return true;
     }
 
@@ -804,11 +196,11 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             return;
         }
 
-        // Return bonded devices immediately
+        // Immediately return bonded devices
         Set<BluetoothDevice> bonded = bluetoothAdapter.getBondedDevices();
         for (BluetoothDevice device : bonded) {
             final Map<String, Object> map = deviceToMap(device);
-            for (EventChannel.EventSink sink : discoverySinks.values()) {
+            for (EventChannel.EventSink sink : sinkList.values()) {
                 sink.success(map);
             }
         }
@@ -816,6 +208,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         if (bluetoothAdapter.isDiscovering()) {
             bluetoothAdapter.cancelDiscovery();
         }
+
         bluetoothAdapter.startDiscovery();
     }
 
@@ -825,7 +218,160 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         }
     }
 
-    // ActivityAware methods
+    private void updatePrintingProgress(int total, int progress) {
+        mainThread.post(() -> {
+            Map<String, Object> data = new HashMap<>();
+            data.put("total", total);
+            data.put("progress", progress);
+            channel.invokeMethod("onPrintingProgress", data);
+        });
+    }
+
+    @Override
+    public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
+        final String method = call.method;
+        switch (method) {
+            case "connect": {
+                new Thread(() -> {
+                    synchronized (FlutterBluetoothPrinterPlugin.this) {
+                        try {
+                            String address = call.argument("address");
+                            BluetoothSocket bluetoothSocket = createBluetoothSocket(address);
+                            bluetoothSocket.connect();
+                            connectedDevices.put(address, bluetoothSocket);
+                            // Start reading data from the Bluetooth device
+                            startReadingData(bluetoothSocket);
+
+                            mainThread.post(() -> result.success(true));
+                        } catch (Exception e) {
+                            mainThread.post(() -> result.error("error", e.getMessage(), null));
+                        }
+                    }
+                }).start();
+                return;
+            }
+            case "getState": {
+                if (!ensurePermission(false)) {
+                    result.success(3);
+                    return;
+                }
+
+                if (!bluetoothAdapter.isEnabled()) {
+                    result.success(1);
+                    return;
+                }
+
+                final int state = bluetoothAdapter.getState();
+                result.success(state == BluetoothAdapter.STATE_ON ? 2 : 1);
+                return;
+            }
+
+            case "disconnect": {
+                new Thread(() -> {
+                    synchronized (FlutterBluetoothPrinterPlugin.this) {
+                        try {
+                            String address = call.argument("address");
+                            BluetoothSocket socket = connectedDevices.remove(address);
+                            if (socket != null) {
+                                stopReading(); // Stop reading thread
+                                socket.close();
+                            }
+
+                            mainThread.post(() -> result.success(true));
+                        } catch (Exception e) {
+                            mainThread.post(() -> result.error("error", e.getMessage(), null));
+                        }
+                    }
+                }).start();
+                return;
+            }
+
+            case "write": {
+                // CONNECTING
+                channel.invokeMethod("didUpdateState", 1);
+                new Thread(() -> {
+                    synchronized (FlutterBluetoothPrinterPlugin.this) {
+                        try {
+                            String address = call.argument("address");
+                            boolean keepConnected = call.argument("keep_connected");
+                            byte[] data = call.argument("data");
+
+                            BluetoothSocket bluetoothSocket = connectedDevices.get(address);
+                            if (bluetoothSocket == null) {
+                                bluetoothSocket = createBluetoothSocket(address);
+                                bluetoothSocket.connect();
+                            }
+
+                            if (keepConnected && !connectedDevices.containsKey(address)) {
+                                connectedDevices.put(address, bluetoothSocket);
+                            }
+
+                            OutputStream writeStream = bluetoothSocket.getOutputStream();
+                            writeStream.write(data);
+                            writeStream.flush();
+
+                            updatePrintingProgress(data.length, data.length);
+
+                            if (!keepConnected) {
+                                writeStream.close();
+                                bluetoothSocket.close();
+                                connectedDevices.remove(address);
+                            }
+
+                            mainThread.post(() -> {
+                                channel.invokeMethod("didUpdateState", 3); // COMPLETED
+                                result.success(true); // DONE
+                            });
+                        } catch (Exception e) {
+                            mainThread.post(() -> result.error("error", e.getMessage(), null));
+                        }
+                    }
+                }).start();
+                return;
+            }
+
+            case "writeData": { // New case for writeData
+                new Thread(() -> {
+                    synchronized (FlutterBluetoothPrinterPlugin.this) {
+                        try {
+                            String address = call.argument("address");
+                            byte[] data = call.argument("data");
+
+                            BluetoothSocket bluetoothSocket = connectedDevices.get(address);
+                            if (bluetoothSocket == null) {
+                                bluetoothSocket = createBluetoothSocket(address);
+                                bluetoothSocket.connect();
+                                connectedDevices.put(address, bluetoothSocket);
+                                // Start reading data from the Bluetooth device
+                                startReadingData(bluetoothSocket);
+                            }
+
+                            OutputStream writeStream = bluetoothSocket.getOutputStream();
+                            writeStream.write(data);
+                            writeStream.flush();
+
+                            mainThread.post(() -> result.success(true));
+                        } catch (Exception e) {
+                            mainThread.post(() -> result.error("error", e.getMessage(), null));
+                        }
+                    }
+                }).start();
+                return;
+            }
+
+            default:
+                result.notImplemented();
+                break;
+        }
+    }
+
+    @Override
+    public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
+        channel.setMethodCallHandler(null);
+        flutterPluginBinding.getApplicationContext().unregisterReceiver(discoveryReceiver);
+        flutterPluginBinding.getApplicationContext().unregisterReceiver(stateReceiver);
+    }
+
     @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
         activity = binding.getActivity();
@@ -833,15 +379,10 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     }
 
     @Override
-    public void onDetachedFromActivityForConfigChanges() {
-        activity = null;
-    }
+    public void onDetachedFromActivityForConfigChanges() {}
 
     @Override
-    public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
-        activity = binding.getActivity();
-        binding.addRequestPermissionsResultListener(this);
-    }
+    public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {}
 
     @Override
     public void onDetachedFromActivity() {
@@ -850,20 +391,24 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
     @Override
     public boolean onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        if (requestCode == PERMISSION_REQUEST_CODE) {
+        if (requestCode == 919191) {
             for (final int result : grantResults) {
                 if (result != PackageManager.PERMISSION_GRANTED) {
                     Map<String, Object> data = new HashMap<>();
-                    data.put("code", 3); // Permission denied
-                    notifyDiscoverySinks(data);
+                    data.put("code", 3);
+                    for (EventChannel.EventSink sink : sinkList.values()) {
+                        sink.success(data);
+                    }
                     return true;
                 }
             }
 
             if (!bluetoothAdapter.isEnabled()) {
                 Map<String, Object> data = new HashMap<>();
-                data.put("code", 1); // Bluetooth off
-                notifyDiscoverySinks(data);
+                data.put("code", 1);
+                for (EventChannel.EventSink sink : sinkList.values()) {
+                    sink.success(data);
+                }
                 return true;
             }
 
@@ -873,23 +418,16 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         return false;
     }
 
-    private void notifyDiscoverySinks(Map<String, Object> data) {
-        for (EventChannel.EventSink sink : discoverySinks.values()) {
-            sink.success(data);
-        }
-    }
-
-    // EventChannel.StreamHandler methods (for discovery)
     @Override
     public void onListen(Object arguments, EventChannel.EventSink events) {
-        discoverySinks.put(arguments, events);
+        sinkList.put(arguments, events);
         startDiscovery(true);
     }
 
     @Override
     public void onCancel(Object arguments) {
-        discoverySinks.remove(arguments);
-        if (discoverySinks.isEmpty()) {
+        sinkList.remove(arguments);
+        if (sinkList.isEmpty()) {
             stopDiscovery();
         }
     }

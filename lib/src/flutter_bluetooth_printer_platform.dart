@@ -1,5 +1,5 @@
-import 'dart:async';
-import 'dart:typed_data';
+part of '../flutter_bluetooth_printer_library.dart';
+
 
 
 typedef ProgressCallback = void Function(int total, int progress);

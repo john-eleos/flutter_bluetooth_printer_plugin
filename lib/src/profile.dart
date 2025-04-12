@@ -1,4 +1,4 @@
-part of flutter_bluetooth_printer;
+part of '../flutter_bluetooth_printer_library.dart';
 
 List<Map> printProfiles = [];
 Map printCapabilities = {};

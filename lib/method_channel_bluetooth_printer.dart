@@ -1,14 +1,5 @@
-part of flutter_bluetooth_printer;
+part of 'flutter_bluetooth_printer_library.dart';
 
-class UnknownState extends DiscoveryState {}
-
-class PermissionRestrictedState extends DiscoveryState {}
-
-class BluetoothDisabledState extends DiscoveryState {}
-
-class BluetoothEnabledState extends DiscoveryState {}
-
-class UnsupportedBluetoothState extends DiscoveryState {}
 
 class MethodChannelBluetoothPrinter extends FlutterBluetoothPrinterPlatform {
   MethodChannelBluetoothPrinter();

@@ -420,7 +420,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                             throw new Exception("Device not found");
                         }
                         safeUnpairDevice(device);
-                    UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
+                    UUID uuid = UUID.fromString(DEFAULT_SPP_UUID);
                     socket = device.createRfcommSocketToServiceRecord(uuid);
                     Log.i("Bluetooth Connection", "rfcommsocket found");
                     if (socket == null) {
@@ -428,7 +428,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     }
 
                     socket.connect();
-                        if(socket!=null&&useKotlin){
+                        if(socket!=null&&socket.isConnected()&&useKotlin){
                             Log.i("Bluetooth Connection", "socket connected");
 
                             thread = new ConnectedThread(socket);
@@ -481,41 +481,83 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
     private void writeData(String address, byte[] data, boolean keepConnected, Result result) {
 //        BluetoothSocket socket = connectedDevices.get(address);
-        if (socket == null) {
-            result.error("NOT_CONNECTED", "Device not connected", null);
-            return;
-        }
+
 
         new Thread(() -> {
-            try {
-                OutputStream outputStream = socket.getOutputStream();
-                outputStream.write(data);
-                outputStream.flush();
+            synchronized (FlutterBluetoothPrinterPlugin.this) {
+                try {
 
-                mainThreadHandler.post(() -> {
-                    printingProgressChannel.invokeMethod("onPrintingProgress",
-                            Map.of("total", data.length, "progress", data.length));
-                    result.success(true);
-                });
 
-                if (!keepConnected) {
-                    if (socket != null) {
-                        socket.close();
-                        socket = null; // Important cleanup
-                        Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
+                    channel.invokeMethod("didUpdateState", 1);
+                    if (socket == null) {
+                        device = bluetoothAdapter.getRemoteDevice(address);
+                        UUID uuid = UUID.fromString(DEFAULT_SPP_UUID);
+                        socket = device.createRfcommSocketToServiceRecord(uuid);
+                        socket.connect();
                     }
+
+                    InputStream inputStream = socket.getInputStream();
+                    OutputStream writeStream = socket.getOutputStream();
+
+                    // PRINTING
+                    mainThreadHandler.post(() -> channel.invokeMethod("didUpdateState", 2));
+                    assert data != null;
+
+
+                    updatePrintingProgress(data.length, 0);
+
+                    // req get printer status
+                    writeStream.write(data);
+                    writeStream.flush();
+
+
+                    updatePrintingProgress(data.length, data.length);
+
+                    if (!keepConnected) {
+                        inputStream.close();
+                        writeStream.close();
+                    }
+
                     mainThreadHandler.post(() -> {
-                        if (statusSink != null) {
-                            statusSink.success(0); // Disconnected
-                        }
+                        // COMPLETED
+                        channel.invokeMethod("didUpdateState", 3);
+
+                        // DONE
+                        result.success(true);
                     });
+                } catch (IOException e) {
+                    mainThreadHandler.post(() -> {
+                        result.error("WRITE_FAILED", e.getMessage(), null);
+                    });
+                }finally {
+                    if (!keepConnected) {
+                        if (socket != null) {
+                            socket.close();
+
+                            socket = null; // Important cleanup
+                            device = null;
+                            Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
+                        }
+                        mainThreadHandler.post(() -> {
+                            if (statusSink != null) {
+                                statusSink.success(0); // Disconnected
+                            }
+                        });
+                    }
                 }
-            } catch (IOException e) {
-                mainThreadHandler.post(() -> {
-                    result.error("WRITE_FAILED", e.getMessage(), null);
-                });
             }
         }).start();
+    }
+
+
+    private void updatePrintingProgress(int total, int progress) {
+        mainThreadHandler.post(() -> {
+            Map<String, Object> data = new HashMap<>();
+            data.put("total", total);
+            data.put("progress", progress);
+
+            channel.invokeMethod("onPrintingProgress", data);
+        });
     }
 
     private void write(Result result, String message) {

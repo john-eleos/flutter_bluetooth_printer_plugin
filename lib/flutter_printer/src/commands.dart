@@ -1,4 +1,4 @@
-part of '../flutter_bluetooth_printer_library.dart';
+part of flutter_bluetooth_printer;
 
 class Commands {
   // Initialization

@@ -486,9 +486,10 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         new Thread(() -> {
             synchronized (FlutterBluetoothPrinterPlugin.this) {
                 try {
+                    // Update state to 'Connected'
+                    mainThreadHandler.post(() -> channel.invokeMethod("didUpdateState", 1));
 
-
-                    channel.invokeMethod("didUpdateState", 1);
+                    // Ensure socket is initialized and connected
                     if (socket == null) {
                         device = bluetoothAdapter.getRemoteDevice(address);
                         UUID uuid = UUID.fromString(DEFAULT_SPP_UUID);
@@ -496,11 +497,14 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                         socket.connect();
                     }
 
+                    // Prepare input and output streams
                     InputStream inputStream = socket.getInputStream();
                     OutputStream writeStream = socket.getOutputStream();
 
-                    // PRINTING
+                    // Notify state update: Preparing to print
                     mainThreadHandler.post(() -> channel.invokeMethod("didUpdateState", 2));
+
+                    // Check data validity
                     assert data != null;
 
 

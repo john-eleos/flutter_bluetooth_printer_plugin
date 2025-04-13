@@ -87,6 +87,16 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             mmOutStream = tmpOut;
         }
 
+        public void cancel() {
+            readStream = false;
+            interrupt();
+            try {
+                mmSocket.close();
+            } catch (IOException e) {
+                Log.e("Bluetooth Connection", "Error closing socket", e);
+            }
+        }
+
         @Override
         public void run() {
             int numBytes;
@@ -107,10 +117,12 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         public void write(byte[] bytes) {
             try {
                 mmOutStream.write(bytes);
+//                mmOutStream.flush();
             } catch (IOException e) {
                 readStream = false;
                 Log.e("Bluetooth Write", "Could not send data to other device", e);
                 new Handler(looper).post(() -> publishBluetoothStatus(0));
+                cancel();
             }
         }
     }
@@ -206,6 +218,39 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             }
         }
     };
+
+    private void cleanupAllResources() {
+        try {
+            // Stop and cleanup reading thread
+            if (thread != null) {
+                thread.readStream = false; // Signal thread to stop
+                thread.interrupt();
+                thread = null;
+            }
+
+            // Close and cleanup socket
+            if (socket != null) {
+                socket.close();
+                socket = null;
+            }
+
+            // Clear device reference
+            device = null;
+
+            // Clear any connected devices from the map
+            connectedDevices.clear();
+
+            // 4. Cancel discovery
+            if (bluetoothAdapter.isDiscovering()) {
+                bluetoothAdapter.cancelDiscovery();
+            }
+            // Notify status change
+            publishBluetoothStatus(0); // Disconnected status
+
+        } catch (IOException e) {
+            Log.e("Bluetooth Cleanup", "Error during cleanup", e);
+        }
+    }
 
     private void publishBluetoothDevice(BluetoothDevice device) {
         if (device == null) return;
@@ -308,6 +353,19 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         return false;
     }
 
+    private void safeUnpairDevice() {
+        try{
+            Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
+            for (BluetoothDevice device : bondedDevices) {
+                if(device.getBondState() == BluetoothDevice.BOND_BONDED){
+                    device.getClass().getMethod("removeBond").invoke(device);
+                }
+            }
+        } catch (Exception e) {
+            Log.e("BluetoothPlugin", "Error unregistering receivers", e);
+        }
+    }
+
     private void startDiscovery(boolean requestPermission, boolean forKotlin) {
         if (!checkPermissions(requestPermission)) {
             return;
@@ -345,6 +403,13 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             result.error("PERMISSION_DENIED", "Bluetooth permissions not granted", null);
             return;
         }
+
+        // Clean up any existing connections first
+        cleanupAllResources();
+
+        safeUnpairDevice();
+
+
         publishBluetoothStatus(1);
 
         if(!useKotlin){
@@ -476,8 +541,6 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                         socket = null; // Important cleanup
                         Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
                     }
-//                    socket.close();
-//                    connectedDevices.remove(address);
                     mainThreadHandler.post(() -> {
                         if (statusSink != null) {
                             statusSink.success(0); // Disconnected
@@ -528,36 +591,18 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
             case "disconnect":
                 String disconnectAddress = call.argument("address");
-//                BluetoothSocket socket = connectedDevices.get(disconnectAddress);
-                if (socket != null) {
-                    try {
-                        Log.i("Bluetooth Disconnect", "device removed from memory");
-                        if (thread != null) {
-                            thread.interrupt();
-                            Log.i("Bluetooth Disconnect", "read thread closed");
-                            thread = null;
-                            Log.i("Bluetooth Disconnect", "read thread freed");
-                        }
+                // Clean up any existing connections first
+                cleanupAllResources();
 
-                        if (socket != null) {
-                            socket.close();
-                            socket = null; // Important cleanup
-                            Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
-                        }
-//                        connectedDevices.remove(disconnectAddress);
                         mainThreadHandler.post(() -> {
                             if (statusSink != null) {
                                 statusSink.success(0); // Disconnected
                             }
                             result.success(true);
                         });
-                    } catch (IOException e) {
-                        result.error("DISCONNECT_FAILED", e.getMessage(), null);
-                    }
+
                     publishBluetoothStatus(0);
-                } else {
-                    result.success(false);
-                }
+
                 break;
 
             case "getState":

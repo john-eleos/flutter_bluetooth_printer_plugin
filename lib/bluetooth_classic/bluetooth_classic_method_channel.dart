@@ -99,7 +99,7 @@ class MethodChannelBluetoothClassic extends BluetoothClassicPlatform {
   Future<bool> connect(String address, String serviceUUID) async {
     var res =
         await methodChannel.invokeMethod<bool>("connect", <String, String>{
-      "deviceId": address,
+      "address": address,
       "serviceUUID": serviceUUID,
           "usekotlin": "true"
     });

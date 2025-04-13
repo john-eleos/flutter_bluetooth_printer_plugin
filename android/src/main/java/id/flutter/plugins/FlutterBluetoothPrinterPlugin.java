@@ -198,13 +198,18 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                         try {
                             String address = call.argument("address");
                             BluetoothSocket bluetoothSocket = connectedDevices.get(address);
-                            if (bluetoothSocket == null) {
+                            if (bluetoothSocket != null) {
+                                BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+                                if(device.getBondState()==BluetoothDevice.BOND_BONDED){
+                                    device.getClass().getMethod("removeBond",  (Class[]) null).invoke(device, (Object[]) null);
+                                }
+                            }
                                 final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
                                 UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
                                 bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid);
                                 bluetoothSocket.connect();
                                 connectedDevices.put(address, bluetoothSocket);
-                            }
+
 
                             mainThread.post(() -> {
                                 // DONE

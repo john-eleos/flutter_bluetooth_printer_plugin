@@ -363,13 +363,9 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 }
 
                 socket.connect();
-                Log.i("Bluetooth Connection", "socket connected");
 
-                thread = new ConnectedThread(socket);
-                Log.i("Bluetooth Connection", "thread created");
-                thread.start();
 
-                connectedDevices.put(address, socket);
+//                connectedDevices.put(address, socket);
 
                 mainThreadHandler.post(() -> {
                     if (statusSink != null) {
@@ -379,8 +375,8 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     result.success(true);
                 });
                 publishBluetoothStatus(2);
-
-                startReadingThread(address, socket);
+// socket
+                startReadingThread(address);
 
             } catch (Exception e) {
                 mainThreadHandler.post(() -> {
@@ -392,9 +388,19 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 });
             }
         }).start();
+
+        if(socket!=null){
+            Log.i("Bluetooth Connection", "socket connected");
+
+            thread = new ConnectedThread(socket);
+            Log.i("Bluetooth Connection", "thread created");
+            thread.start();
+        }
     }
 
-    private void startReadingThread(String address, BluetoothSocket socket) {
+    // , BluetoothSocket socket
+
+    private void startReadingThread(String address) {
         new Thread(() -> {
             try {
                 InputStream inputStream = socket.getInputStream();
@@ -414,7 +420,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 }
             } catch (IOException e) {
                 mainThreadHandler.post(() -> {
-                    connectedDevices.remove(address);
+//                    connectedDevices.remove(address);
                     if (statusSink != null) {
                         statusSink.success(0); // Disconnected
                     }
@@ -424,7 +430,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
     }
 
     private void writeData(String address, byte[] data, boolean keepConnected, Result result) {
-        BluetoothSocket socket = connectedDevices.get(address);
+//        BluetoothSocket socket = connectedDevices.get(address);
         if (socket == null) {
             result.error("NOT_CONNECTED", "Device not connected", null);
             return;
@@ -443,8 +449,13 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 });
 
                 if (!keepConnected) {
-                    socket.close();
-                    connectedDevices.remove(address);
+                    if (socket != null) {
+                        socket.close();
+                        socket = null; // Important cleanup
+                        Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
+                    }
+//                    socket.close();
+//                    connectedDevices.remove(address);
                     mainThreadHandler.post(() -> {
                         if (statusSink != null) {
                             statusSink.success(0); // Disconnected
@@ -494,7 +505,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
             case "disconnect":
                 String disconnectAddress = call.argument("address");
-                BluetoothSocket socket = connectedDevices.get(disconnectAddress);
+//                BluetoothSocket socket = connectedDevices.get(disconnectAddress);
                 if (socket != null) {
                     try {
                         Log.i("Bluetooth Disconnect", "device removed from memory");
@@ -505,8 +516,12 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                             Log.i("Bluetooth Disconnect", "read thread freed");
                         }
 
-                        socket.close();
-                        connectedDevices.remove(disconnectAddress);
+                        if (socket != null) {
+                            socket.close();
+                            socket = null; // Important cleanup
+                            Log.i("Bluetooth Disconnect", "rfcomm socket closed and nulled");
+                        }
+//                        connectedDevices.remove(disconnectAddress);
                         mainThreadHandler.post(() -> {
                             if (statusSink != null) {
                                 statusSink.success(0); // Disconnected

@@ -353,14 +353,14 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         return false;
     }
 
-    private void safeUnpairDevice() {
+    private void safeUnpairDevice(BluetoothDevice device) {
         try{
-            Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
-            for (BluetoothDevice device : bondedDevices) {
+//            Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
+//            for (BluetoothDevice device : bondedDevices) {
                 if(device.getBondState() == BluetoothDevice.BOND_BONDED){
                     device.getClass().getMethod("removeBond").invoke(device);
                 }
-            }
+//            }
         } catch (Exception e) {
             Log.e("BluetoothPlugin", "Error unregistering receivers", e);
         }
@@ -407,12 +407,10 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         // Clean up any existing connections first
         cleanupAllResources();
 
-        safeUnpairDevice();
 
 
         publishBluetoothStatus(1);
 
-        if(!useKotlin){
             new Thread(() -> {
                 synchronized (FlutterBluetoothPrinterPlugin.this) {
                     try {
@@ -421,6 +419,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                         if (device == null) {
                             throw new Exception("Device not found");
                         }
+                        safeUnpairDevice(device);
                     UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
                     socket = device.createRfcommSocketToServiceRecord(uuid);
                     Log.i("Bluetooth Connection", "rfcommsocket found");
@@ -429,6 +428,13 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     }
 
                     socket.connect();
+                        if(socket!=null&&useKotlin){
+                            Log.i("Bluetooth Connection", "socket connected");
+
+                            thread = new ConnectedThread(socket);
+                            Log.i("Bluetooth Connection", "thread created");
+                            thread.start();
+                        }
 
                         mainThreadHandler.post(() -> {
                             // DONE
@@ -442,50 +448,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 }
             }).start();
 
-
-        }else{
-
-            try {
-                device = bluetoothAdapter.getRemoteDevice(address);
-                Log.i("Bluetooth Connection", "device found");
-                if (device == null) {
-                    throw new Exception("Device not found");
-                }
-                UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
-                socket = device.createRfcommSocketToServiceRecord(uuid);
-                Log.i("Bluetooth Connection", "rfcommsocket found");
-                if (socket == null) {
-                    throw new Exception("Failed to create socket");
-                }
-
-                socket.connect();
-
-                if(socket!=null){
-                    Log.i("Bluetooth Connection", "socket connected");
-
-                    thread = new ConnectedThread(socket);
-                    Log.i("Bluetooth Connection", "thread created");
-                    thread.start();
-                }
-
-                mainThreadHandler.post(() -> {
-                    // DONE
-                    result.success(true);
-                });
-            } catch (Exception e) {
-                mainThreadHandler.post(() -> {
-                    result.error("error", e.getMessage(), null);
-                });
-            }
-
-        }
-
-
-
-
     }
-
-    // , BluetoothSocket socket
 
     private void startReadingThread(String address) {
         new Thread(() -> {
@@ -570,7 +533,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         switch (call.method) {
             case "connect":
                 String address = call.argument("address");
-                String useKotlin = call.argument("usekotlin");
+                String useKotlin = call.argument("useKotlin");
                 connectDevice(address, DEFAULT_SPP_UUID, result, useKotlin != null && useKotlin.equals("true"));
                 break;
 

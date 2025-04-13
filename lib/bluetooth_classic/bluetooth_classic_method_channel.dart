@@ -101,7 +101,7 @@ class MethodChannelBluetoothClassic extends BluetoothClassicPlatform {
         await methodChannel.invokeMethod<bool>("connect", <String, String>{
       "address": address,
       "serviceUUID": serviceUUID,
-          "usekotlin": "true"
+          "useKotlin": "true"
     });
     return res!;
   }

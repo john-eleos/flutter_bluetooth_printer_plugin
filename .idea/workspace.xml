@@ -6,8 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="5a9253d1-d7a2-4381-8b17-1078a73df2d4" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/android/src/main/java/id/flutter/plugins/FlutterBluetoothPrinterPlugin.java" beforeDir="false" afterPath="$PROJECT_DIR$/android/src/main/java/id/flutter/plugins/FlutterBluetoothPrinterPlugin.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lib/bluetooth_classic/bluetooth_classic_method_channel.dart" beforeDir="false" afterPath="$PROJECT_DIR$/lib/bluetooth_classic/bluetooth_classic_method_channel.dart" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pubspec.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/pubspec.yaml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

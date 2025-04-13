@@ -516,6 +516,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                     if (!keepConnected) {
                         inputStream.close();
                         writeStream.close();
+                        socket.close();
                     }
 
                     mainThreadHandler.post(() -> {
@@ -532,7 +533,6 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 }finally {
                     if (!keepConnected) {
                         if (socket != null) {
-                            socket.close();
 
                             socket = null; // Important cleanup
                             device = null;

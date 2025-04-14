@@ -67,11 +67,7 @@ abstract class BluetoothClassicPlatform extends PlatformInterface {
     throw UnimplementedError('disconnect() has not been implemented.');
   }
 
-  Future<bool> write({
-    required String address,
-    required Uint8List data,
-    bool keepConnected = true,
-  }) {
+  Future<bool> write(String message) {
     throw UnimplementedError('write() has not been implemented.');
   }
 }

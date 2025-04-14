@@ -11,15 +11,15 @@ class MethodChannelBluetoothClassic extends BluetoothClassicPlatform {
   /// The method channel used to interact with the native platform.
   @visibleForTesting
   final methodChannel =
-      const MethodChannel('com.matteogassend/bluetooth_classic');
+      const MethodChannel('maseka.dev/flutter_bluetooth_printer');
 
   /// The event channel used to receive discovered devices events
   final deviceDiscoveryChannel =
-      const EventChannel("com.matteogassend/bluetooth_classic/devices");
+      const EventChannel("maseka.dev/flutter_bluetooth_printer/devices");
   final deviceStatusChannel =
-      const EventChannel("com.matteogassend/bluetooth_classic/status");
+      const EventChannel("maseka.dev/flutter_bluetooth_printer/status");
   final deviceDataChannel =
-      const EventChannel("com.matteogassend/bluetooth_classic/read");
+      const EventChannel("maseka.dev/flutter_bluetooth_printer/read");
 
   /// stream mapped to deviceDiscoveryChannel
   Stream<dynamic>? _deviceDiscoveryStream;

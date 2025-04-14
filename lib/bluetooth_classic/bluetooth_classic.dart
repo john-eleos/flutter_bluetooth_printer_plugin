@@ -43,13 +43,7 @@ class BluetoothClassic {
     return BluetoothClassicPlatform.instance.connect(address, serviceUUID);
   }
 
-  Future<bool> write({
-    required String address,
-    required Uint8List data,
-    bool keepConnected = true,
-  }) {
-    return BluetoothClassicPlatform.instance.write(
-      address:address, data:data, keepConnected: keepConnected,
-    );
+  Future<bool> write(String message) {
+    return BluetoothClassicPlatform.instance.write(message);
   }
 }

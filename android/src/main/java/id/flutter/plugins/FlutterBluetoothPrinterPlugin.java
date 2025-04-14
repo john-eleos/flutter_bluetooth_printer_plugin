@@ -41,6 +41,13 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry;
 
+
+import android.annotation.SuppressLint;
+import androidx.core.content.ContextCompat;
+import androidx.core.app.ActivityCompat;
+
+
+
 public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler,
         PluginRegistry.RequestPermissionsResultListener, EventChannel.StreamHandler {
 
@@ -620,7 +627,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         activeResult = null;
     }
 
-    @Override
+    // @Override
     public boolean onRequestPermissionsResults(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == myPermissionCode) {
             permissionGranted = grantResults.length > 0;

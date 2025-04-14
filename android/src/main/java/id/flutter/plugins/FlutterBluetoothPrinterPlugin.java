@@ -23,6 +23,7 @@ import androidx.annotation.NonNull;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -41,12 +42,9 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry;
 
-
 import android.annotation.SuppressLint;
 import androidx.core.content.ContextCompat;
 import androidx.core.app.ActivityCompat;
-
-
 
 public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAware, MethodCallHandler,
         PluginRegistry.RequestPermissionsResultListener, EventChannel.StreamHandler {
@@ -86,7 +84,6 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             this.inputStream = socket.getInputStream();
             this.outputStream = socket.getOutputStream();
         }
-
 
         @Override
         public void run() {
@@ -349,6 +346,30 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                             BluetoothSocket bluetoothSocket = connectedDevices.get(address);
                             if (bluetoothSocket == null) {
                                 final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+                                // Check if device is paired
+                                if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                                    try {
+                                        // Unpair the device
+                                        Method removeBondMethod = device.getClass().getMethod("removeBond");
+                                        Boolean success = (Boolean) removeBondMethod.invoke(device);
+
+                                        if (!success) {
+                                            throw new Exception("Failed to unpair device");
+                                        }
+
+                                        // Wait for unpairing to complete
+                                        int retries = 0;
+                                        while (device.getBondState() == BluetoothDevice.BOND_BONDED && retries++ < 10) {
+                                            Thread.sleep(200);
+                                        }
+                                    } catch (Exception e) {
+                                        mainThread.post(() -> {
+                                            result.error("unpair_error", "Failed to unpair device: " + e.getMessage(),
+                                                    null);
+                                        });
+                                        return;
+                                    }
+                                }
                                 UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
                                 bluetoothSocket = device.createRfcommSocketToServiceRecord(uuid);
                                 bluetoothSocket.connect();
@@ -484,7 +505,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 return;
             }
 
-            // KOTLIN STARTS HERE 
+            // KOTLIN STARTS HERE
 
             case "getPlatformVersionKotlin":
                 result.success("Android " + Build.VERSION.RELEASE);
@@ -519,7 +540,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         }
     }
 
-    // START KOTLIN HERE 
+    // START KOTLIN HERE
     private void write(MethodChannel.Result result, String message) {
         if (thread != null) {
             thread.write(message.getBytes());
@@ -553,7 +574,7 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
                 result.error("invalid_args", "deviceId and serviceUuid must not be null", null);
                 return;
             }
-            
+
             publishBluetoothStatus(1);
             device = ba.getRemoteDevice(deviceId);
             socket = device.createRfcommSocketToServiceRecord(UUID.fromString(serviceUuid));
@@ -581,8 +602,6 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         ba.cancelDiscovery();
         result.success(true);
     }
-
-
 
     private void initPermissions(MethodChannel.Result result) {
         if (activeResult != null) {
@@ -633,7 +652,8 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
     private void completeCheckPermissions() {
         if (permissionGranted) {
-            if (activeResult != null) activeResult.success(true);
+            if (activeResult != null)
+                activeResult.success(true);
         } else {
             if (activeResult != null)
                 activeResult.error("permissions_not_granted", "Permissions required", null);

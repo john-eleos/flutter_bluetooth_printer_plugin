@@ -36,3 +36,15 @@ android {
         minSdkVersion 18
     }
 }
+
+dependencies {
+    // Core AndroidX dependencies
+    implementation 'androidx.core:core:1.9.0'
+    implementation 'androidx.annotation:annotation:1.5.0'
+    
+    // Bluetooth dependencies
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    
+    // Kotlin stdlib
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.6.21"
+}

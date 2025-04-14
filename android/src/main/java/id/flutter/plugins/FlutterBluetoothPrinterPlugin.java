@@ -87,19 +87,24 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             this.outputStream = socket.getOutputStream();
         }
 
+
         @Override
         public void run() {
             int numBytes;
             while (readStream) {
                 try {
                     numBytes = inputStream.read(buffer);
-                    Log.i("Bluetooth Read", "read " + buffer);
-                    new Handler(Looper.getMainLooper())
-                            .post(() -> publishBluetoothData(java.util.Arrays.copyOf(buffer, numBytes)));
+                    if (numBytes > 0) {
+                        Log.i("Bluetooth Read", "read " + numBytes + " bytes");
+                        final byte[] receivedData = Arrays.copyOf(buffer, numBytes);
+                        new Handler(Looper.getMainLooper())
+                                .post(() -> publishBluetoothData(receivedData));
+                    }
                 } catch (IOException e) {
                     Log.e("Bluetooth Read", "input stream disconnected", e);
-                    new Handler(looper).post(() -> publishBluetoothStatus(0));
+                    new Handler(Looper.getMainLooper()).post(() -> publishBluetoothStatus(0));
                     readStream = false;
+                    break;
                 }
             }
         }
@@ -107,10 +112,11 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         public void write(byte[] bytes) {
             try {
                 outputStream.write(bytes);
+                outputStream.flush();
             } catch (IOException e) {
                 readStream = false;
                 Log.e("Bluetooth Write", "could not send data to other device", e);
-                new Handler(looper).post(() -> publishBluetoothStatus(0));
+                new Handler(Looper.getMainLooper()).post(() -> publishBluetoothStatus(0));
             }
         }
     }
@@ -543,6 +549,11 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
 
     private void connect(MethodChannel.Result result, String deviceId, String serviceUuid) {
         try {
+            if (deviceId == null || serviceUuid == null) {
+                result.error("invalid_args", "deviceId and serviceUuid must not be null", null);
+                return;
+            }
+            
             publishBluetoothStatus(1);
             device = ba.getRemoteDevice(deviceId);
             socket = device.createRfcommSocketToServiceRecord(UUID.fromString(serviceUuid));
@@ -553,7 +564,10 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
             result.success(true);
         } catch (IOException e) {
             publishBluetoothStatus(0);
-            result.error("connection_failed", "could not connect to device " + deviceId, null);
+            result.error("connection_failed", "could not connect to device " + deviceId + ": " + e.getMessage(), null);
+        } catch (IllegalArgumentException e) {
+            publishBluetoothStatus(0);
+            result.error("invalid_uuid", "invalid service UUID: " + serviceUuid, null);
         }
     }
 
@@ -627,7 +641,6 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         activeResult = null;
     }
 
-    // @Override
     public boolean onRequestPermissionsResults(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == myPermissionCode) {
             permissionGranted = grantResults.length > 0;
@@ -696,11 +709,19 @@ public class FlutterBluetoothPrinterPlugin implements FlutterPlugin, ActivityAwa
         channel.setMethodCallHandler(null);
         flutterPluginBinding.getApplicationContext().unregisterReceiver(discoveryReceiver);
         flutterPluginBinding.getApplicationContext().unregisterReceiver(stateReceiver);
+
+        // Unregister Kotlin receiver
+        try {
+            flutterPluginBinding.getApplicationContext().unregisterReceiver(receiver);
+        } catch (IllegalArgumentException e) {
+            // Receiver was not registered
+        }
     }
 
     @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
         activity = binding.getActivity();
+        pluginActivity = binding.getActivity(); // Add this for Kotlin part
         binding.addRequestPermissionsResultListener(this);
     }
 
